@@ -1,0 +1,3 @@
+To compile change Makefile_example (enter SDK path) and copy it to Makefile
+Then command `make`
+Binary will be in your SDK's C/bin directory
