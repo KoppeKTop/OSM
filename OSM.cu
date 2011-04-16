@@ -8,27 +8,40 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <fstream>
 
 #include <vector>
 #include <list>
-#include <pair>
+//#include <pair>
 #include <algorithm>
 
 // includes, project
-#include <cutil_inline.h>
-//#include <thrust/host_vector.h>
-//#include <thrust/device_vector.h>
-//#include <thrust/functional.h>
-//#include <thrust/reduce.h>
+//#include <cutil_inline.h>
+#include <thrust/host_vector.h>
+#include <thrust/device_vector.h>
+#include <thrust/functional.h>
+#include <thrust/reduce.h>
+#include <thrust/extrema.h>
 
 // includes, kernels
 #include <OSM_kernel.cu>
 
 // includes cpp functions
 #include <OSM.h>
-#include <sph_list.h>
+
+typedef float4 sph;
+typedef thrust::device_vector<float4> d_sph_list;
+typedef thrust::host_vector<float4>   h_sph_list;
 
 using namespace std;
+
+// For BGL connection algorithm
+#include <boost/config.hpp>
+#include <boost/graph/connected_components.hpp>
+#include <boost/graph/adjacency_list.hpp>
+
+// For logging
+#include <glog/logging.h>
 
 ////////////////////////////////////////////////////////////////////////////////
 // declaration, forward
@@ -46,7 +59,7 @@ main( int argc, char** argv)
     srand ( time(NULL) );
     runTest( argc, argv);
 
-    cutilExit(argc, argv);
+//    cutilExit(argc, argv);
 }
 
 double randf()
@@ -56,202 +69,204 @@ double randf()
 
 float GetSphereRadius()
 {
-    return 4.0;
+    return 2.0;
 }
 
-float4 GenRndPoint(float3 dim_len)
+sph GenRndPoint(float3 dim_len)
 {
     float4 result;
     result.x = randf() * dim_len.x;
     result.y = randf() * dim_len.y;
     result.z = randf() * dim_len.z;
-    result.v = GetSphereRadius();
+    result.w = GetSphereRadius();
     return result;
 }
+
+const float max_overlapping = 0.4;
 
 #define BLOCK_DIM 256
 
 
-
-int * get_overlap_list(sph_list & spheres, float4 curr_sph, max_overlapping)
+struct dist_gt
 {
-    int max_overlap = 10;
-    int * d_overlaps = NULL;
-    size_t overlaps_sz = (max_overlap+1)*sizeof(int);
-    int * results = (int *)malloc(overlaps_sz);
-    if (spheres.size() < BLOCK_DIM * 10)
+    sph curr;
+    
+    dist_gt(sph c)    {   curr = c;   }
+    
+    __host__ __device__
+    bool operator()(const sph first, const sph second) const
     {
-        // Use CPU
-        memset(results, 0, overlaps_sz);
-        overlap_list(spheres.host(), curr_sph, results, max_overlapping, spheres.size());
+        float l1 = overlapping(first.w, curr.w, dist(first, curr));
+        float l2 = overlapping(second.w, curr.w, dist(second, curr));
+        
+        //printf("L1 = %f, L2 = %f\n", l1, l2);
+        return l1 > l2;
     }
-    else
-    {
-        // Use GPU
-        int * d_results = NULL;
-        cutilSafeCall( cudaMalloc( (void**) & d_results, overlaps_sz));
-        cutilSafeCall( cudaMemset( d_results, 0, overlaps_sz));
-        dim3 grid(spheres.size()/BLOCK_DIM+1,1);
-        dim3 block(BLOCK_DIM, 1, 1);
-        overlap_list<<<grid, block>>>(spheres.dev(), curr_sph, d_results, max_overlapping, spheres.size());
-        cutilSafeCall( cudaThreadSynchronize());
-        cutilSafeCall( cudaMemcpy(results, d_results, overlaps_sz, cudaMemcpyDeviceToHost));
-        cutilSafeCall( cudaFree(d_results));
-    }
-    return results;
-}
-
-bool dist_cmp(pair <float4, float> a, pair <float4, float> b)
-{
-    return a.second < b.second;
-}
-
-struct overlapper {
-    float4 curr_sph;
-    overlapper(float4 sph) { curr_sph = sph; }
-    pair <float4, float> operator() (pair <float4, float> a) 
-    {
-        a.second = overlapping(a.v, curr_sph.v, distance(a, curr_sph));
-        return a;
-    }
-} overlapper;
+};
 
 float min_dist(float r1, float r2)
 {
-    return sqrt((r1+r2+dist)*(r2+dist-r1)*(r1+dist-r2)*(r1+r2-dist))
+    float c = SQR(max_overlapping * (r1+r2));
+    return 0.5 * (sqrt(4*SQR(r1) - c) + sqrt(4*SQR(r2) - c));
+}
 
-void 
+#define EPS 0.000001
 
-float4 * GenMaxPacked(const int max_cnt, float3 dim_len)
+bool in_space(const float3 & dim_len, const sph & pnt)
+{
+    return (0 <= pnt.x && pnt.x < dim_len.x &&
+            0 <= pnt.y && pnt.y < dim_len.y &&
+            0 <= pnt.z && pnt.z < dim_len.z);
+}
+
+void move_pnt(const float3 & dim_len, const sph & center_sph, sph & moved_sph)
+{
+    float old_dist = dist(center_sph, moved_sph);
+    if (old_dist < EPS)
+    {
+        moved_sph = GenRndPoint(dim_len);
+        return;
+    }
+    float r = min_dist(moved_sph.w, center_sph.w)/old_dist;
+    moved_sph.x = (moved_sph.x - center_sph.x)*r + center_sph.x;
+    moved_sph.y = (moved_sph.y - center_sph.y)*r + center_sph.y;
+    moved_sph.z = (moved_sph.z - center_sph.z)*r + center_sph.z;
+    if (!in_space(dim_len, moved_sph))
+    {
+        moved_sph = GenRndPoint(dim_len);
+    }
+}
+
+ostream& operator<< (ostream& out, float4& item )
+{
+    out << item.x << ", " << item.y << ", " << item.z << ", " << item.w;
+    return out;
+}
+
+template <typename Iterator, typename BinaryPredicate>
+Iterator my_max_element(Iterator begin, Iterator end, BinaryPredicate gt_op)
+{
+    Iterator result = begin;
+    Iterator curr = result+1;
+    while (curr != end)
+    {
+        if (gt_op(*curr, *result))
+            result = curr;
+        ++curr;
+    }
+    return result;
+}
+
+int GenMaxPacked(const int max_cnt, const float3 dim_len, h_sph_list & spheres)
 {
     int curr_cnt = 0;
-    const int max_holost = 100;
+    int max_holost = dim_len.x * dim_len.y * dim_len.z;
     int holost = 0;
-    sph_list spheres(max_cnt);
     
     const int max_moves = 100;
     while (curr_cnt < max_cnt && holost++ < max_holost)
     {
-        float4 new_pnt = GenRndPoint(dim_len);
+        sph new_pnt = GenRndPoint(dim_len);
+        //printf("New point (%i of %i): (%f, %f, %f)\n", curr_cnt, max_cnt, new_pnt.x, new_pnt.y, new_pnt.z);
+        if (curr_cnt == 0) {
+            spheres[curr_cnt++] = new_pnt;
+            holost = 0;
+            continue;
+        }
         bool add = false;
         int moves = 0;
-        while (moves++ < max_moves && !add)
+        while (moves++ < max_moves)
         {
-            int * overlaps = get_overlap_list(spheres, new_pnt, max_overlapping)
-            int over_cnt = overlaps[0];
-            if (over_cnt != 0)
-            {
-                vector< pair <float4, float> > overlap_arr(over_cnt);
-                for (int i = 0; i < over_cnt; ++i)
-                {
-                    float4 curr_sph = spheres.get(overlaps[i+1]);
-                    overlap_arr[i] = pair <float4, float>(curr_sph, 0);
-                }
-                transform(overlap_arr.begin(), overlap_arr.end(), overlap_arr.begin(), overlapper(new_pnt))
-                sort(overlap_arr.begin(), overlap_arr.end(), dist_cmp);
-                if (overlap_arr[0].second > max_ovelapping)
-                {
-                    move_local(overlap_arr, new_pnt);
-                }
-            }
-            else
-            {
+            sph over_sph = *(my_max_element(spheres.begin(), spheres.begin() + curr_cnt, dist_gt(new_pnt)) );
+            if (is_overlapped(over_sph, new_pnt, max_overlapping)) {
+                move_pnt(dim_len, over_sph, new_pnt);
+            } else {
                 add = true;
+                break;
             }
-            moves = 0;
-            free(overlaps);
         }
-        if (add)
-        {
-            spheres.append(new_pnt);
+        if (add) {
+            spheres[curr_cnt++] = new_pnt;
             holost = 0;
+            cout << "Point #" << curr_cnt << " of " << max_cnt << ": " << new_pnt << endl;
         }
     }
+    return curr_cnt;
 }
 
-////////////////////////////////////////////////////////////////////////////////
-//! Run a simple test for CUDA
-////////////////////////////////////////////////////////////////////////////////
+template <typename T>
+class OutputItem
+{
+   public:
+       explicit OutputItem( std::ofstream & stream )
+                : stream_(&stream)
+                {
+                }
+
+       void operator()( T const & item )
+       {
+           *stream_ << item.x << item.y << item.z << item.w;
+       }
+
+   private:
+       std::ofstream * stream_;
+};
+
+void SaveToFile(const h_sph_list & spheres, const char * filename)
+{
+    FILE * outFile = fopen(filename, "wb");
+    
+    for (int i = 0; i < spheres.size(); ++i)
+    {
+        fwrite(&(spheres[i]), sizeof(spheres[i].x), 4, outFile);
+    }
+    
+    fclose(outFile);
+}
+
+void RemovePoints( const h_sph_list & spheres )
+{
+    // from BGL book p 201
+    using namespace boost;
+    typedef adjacency_list< vecS, vecS, undirectedS > Graph;
+    typedef graph_traits< Graph >::vertex_descriptor Vertex;
+    
+    Graph vg(spheres.size()); 
+    printf("Convert points to graph... ");
+    for (int curr_vertex = 0; curr_vertex < spheres.size(); ++curr_vertex)
+        for (int adj_vertex = curr_vertex+1; adj_vertex < spheres.size(); ++adj_vertex)
+            if (is_overlapped(spheres[curr_vertex], spheres[adj_vertex], max_overlapping))
+            {
+                add_edge(curr_vertex, adj_vertex, vg);
+            }
+    printf("Done.\n");
+    
+    std::vector<int> c(num_vertices(vg));
+    int num = 
+    connected_components(vg, make_iterator_property_map(c.begin(), get(vertex_index, vg), c[0]));
+    
+    printf("%d clusters in structure\n", num);
+}
+
 void
 runTest( int argc, char** argv) 
 {
-	// use command-line specified CUDA device, otherwise use device with highest Gflops/s
-	if( cutCheckCmdLineFlag(argc, (const char**)argv, "device") )
-		cutilDeviceInit(argc, argv);
-	else
-		cudaSetDevice( cutGetMaxGflopsDeviceId() );
-
-    unsigned int timer = 0;
-    cutilCheckError( cutCreateTimer( &timer));
-    cutilCheckError( cutStartTimer( timer));
-
-    unsigned int num_threads = 32;
-    unsigned int mem_size = sizeof( float) * num_threads;
-
-    // allocate host memory
-    float* h_idata = (float*) malloc( mem_size);
-    // initalize the memory
-    for( unsigned int i = 0; i < num_threads; ++i) 
-    {
-        h_idata[i] = (float) i;
-    }
-
-    // allocate device memory
-    float* d_idata;
-    cutilSafeCall( cudaMalloc( (void**) &d_idata, mem_size));
-    // copy host memory to device
-    cutilSafeCall( cudaMemcpy( d_idata, h_idata, mem_size,
-                                cudaMemcpyHostToDevice) );
-
-    // allocate device memory for result
-    float* d_odata;
-    cutilSafeCall( cudaMalloc( (void**) &d_odata, mem_size));
-
-    // setup execution parameters
-    dim3  grid( 1, 1, 1);
-    dim3  threads( num_threads, 1, 1);
-
-    // execute the kernel
-    testKernel<<< grid, threads, mem_size >>>( d_idata, d_odata);
-
-    // check if kernel execution generated and error
-    cutilCheckMsg("Kernel execution failed");
-
-    // allocate mem for the result on host side
-    float* h_odata = (float*) malloc( mem_size);
-    // copy result from device to host
-    cutilSafeCall( cudaMemcpy( h_odata, d_odata, sizeof( float) * num_threads,
-                                cudaMemcpyDeviceToHost) );
-
-    cutilCheckError( cutStopTimer( timer));
-    printf( "Processing time: %f (ms)\n", cutGetTimerValue( timer));
-    cutilCheckError( cutDeleteTimer( timer));
-
-    // compute reference solution
-    float* reference = (float*) malloc( mem_size);
-    computeGold( reference, h_idata, num_threads);
-
-    // check result
-    if( cutCheckCmdLineFlag( argc, (const char**) argv, "regression")) 
-    {
-        // write file for regression test
-        cutilCheckError( cutWriteFilef( "./data/regression.dat",
-                                      h_odata, num_threads, 0.0));
-    }
-    else 
-    {
-        // custom output handling when no regression test running
-        // in this case check if the result is equivalent to the expected soluion
-        CUTBoolean res = cutComparef( reference, h_odata, num_threads);
-        printf( "%s\n", (1 == res) ? "PASSED" : "FAILED");
-    }
-
-    // cleanup memory
-    free( h_idata);
-    free( h_odata);
-    free( reference);
-    cutilSafeCall(cudaFree(d_idata));
-    cutilSafeCall(cudaFree(d_odata));
-
-    cudaThreadExit();
+    const float dim_sz = 50.0f;
+    const double e_max = 0.5f;
+    const double r = 2.0f;
+    
+    const float3 sz = make_float3(dim_sz,dim_sz,dim_sz);
+    const double vol = sz.x * sz.y * sz.z;
+    const double vol_sph = (4.0/3.0) * 3.14159 * (r*r*r);
+    const int max_cnt = vol / vol_sph * (1.0-e_max);
+    
+    h_sph_list spheres(max_cnt);
+    cout << "Start\n";
+    int cnt = GenMaxPacked(max_cnt, sz, spheres);
+    h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
+    
+    SaveToFile( h_spheres, "res.dat");
+    
+    cout << "Done. Points: " << cnt << " of " << max_cnt
+    << ". E = " << (1 - vol_sph * cnt / vol) << endl;
 }
