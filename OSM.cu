@@ -40,6 +40,12 @@ using namespace std;
 #include <boost/graph/connected_components.hpp>
 #include <boost/graph/adjacency_list.hpp>
 
+// from BGL book p 201
+using namespace boost;
+typedef adjacency_list< vecS, vecS, undirectedS > DirGraph;
+typedef graph_traits< DirGraph >::vertex_descriptor Vertex;
+
+
 // For logging
 #include <glog/logging.h>
 
@@ -224,14 +230,16 @@ void SaveToFile(const h_sph_list & spheres, const char * filename)
     fclose(outFile);
 }
 
-void RemovePoints( const h_sph_list & spheres )
+bool IsPercolated( const h_sph_list & spheres, const DirGraph & g )
 {
-    // from BGL book p 201
-    using namespace boost;
-    typedef adjacency_list< vecS, vecS, undirectedS > Graph;
-    typedef graph_traits< Graph >::vertex_descriptor Vertex;
-    
-    Graph vg(spheres.size()); 
+    // find all spheres on the borders
+    // and save cluster numbers
+    // find intersection between borders
+}
+
+void RemovePoints( const h_sph_list & spheres )
+{    
+    DirGraph vg(spheres.size()); 
     printf("Convert points to graph... ");
     for (int curr_vertex = 0; curr_vertex < spheres.size(); ++curr_vertex)
         for (int adj_vertex = curr_vertex+1; adj_vertex < spheres.size(); ++adj_vertex)
@@ -246,6 +254,8 @@ void RemovePoints( const h_sph_list & spheres )
     connected_components(vg, make_iterator_property_map(c.begin(), get(vertex_index, vg), c[0]));
     
     printf("%d clusters in structure\n", num);
+
+    
 }
 
 void
