@@ -6,11 +6,12 @@
 #define _OSM_KERNEL_H_
 
 #include <stdio.h>
+#include <cuda.h>
 
 #define SQR(x)  ((x)*(x))
 
 __device__ __host__ float 
-dist(const float4 pnt1, const float4 pnt2)
+pnt_dist(const float4 pnt1, const float4 pnt2)
 {
     return sqrt(SQR(pnt1.x-pnt2.x) + SQR(pnt1.y-pnt2.y) + SQR(pnt1.z-pnt2.z));
 }
@@ -31,24 +32,32 @@ overlapping(const float r1, const float r2, const float dist)
 __device__ __host__ int 
 is_overlapped(const float4 pnt1, const float4 pnt2, const float max_overlapping)
 {
-    float d = dist(pnt1, pnt2);
+    float d = pnt_dist(pnt1, pnt2);
     float radius_sum = pnt1.w + pnt2.w;
-    return (d < radius_sum && overlapping(pnt1.w, pnt2.w, d) > max_overlapping);
+    return (d < radius_sum && (overlapping(pnt1.w, pnt2.w, d) > max_overlapping));
 }
 
-__global__ void 
-overlap_list(float4 * spheres, float4 curr_sph, int * results, float max_overlapping, int curr_cnt)
-{
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < curr_cnt)
-    {
-        float4 cmp_sph = spheres[idx];
-        if (is_overlapped(curr_sph, cmp_sph, max_overlapping))
-        {
-            int old_cnt = atomicAdd(results, 1);
-            results[old_cnt+1] = idx;
-        }
-    }
+__device__ __host__ int
+slightly_overlap(const float4 pnt1, const float4 pnt2, const float max_overlapping)
+{   
+    float d = pnt_dist(pnt1, pnt2);
+    float radius_sum = pnt1.w + pnt2.w;
+    return (d < radius_sum && (overlapping(pnt1.w, pnt2.w, d) <= max_overlapping));
 }
+
+//__global__ void 
+//overlap_list(float4 * spheres, float4 curr_sph, int * results, float max_overlapping, int curr_cnt)
+//{
+//    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+//    if (idx < curr_cnt)
+//    {
+//        float4 cmp_sph = spheres[idx];
+//        if (is_overlapped(curr_sph, cmp_sph, max_overlapping))
+//        {
+//            int old_cnt = atomicAdd(results, 1);
+//            results[old_cnt+1] = idx;
+//        }
+//    }
+//}
 
 #endif // #ifndef _OSM_KERNEL_H_

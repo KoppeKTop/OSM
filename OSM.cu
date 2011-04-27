@@ -12,6 +12,7 @@
 
 #include <vector>
 #include <list>
+#include <set>
 //#include <pair>
 #include <algorithm>
 
@@ -102,8 +103,8 @@ struct dist_gt
     __host__ __device__
     bool operator()(const sph first, const sph second) const
     {
-        float l1 = overlapping(first.w, curr.w, dist(first, curr));
-        float l2 = overlapping(second.w, curr.w, dist(second, curr));
+        float l1 = overlapping(first.w, curr.w, pnt_dist(first, curr));
+        float l2 = overlapping(second.w, curr.w, pnt_dist(second, curr));
         
         //printf("L1 = %f, L2 = %f\n", l1, l2);
         return l1 > l2;
@@ -127,7 +128,7 @@ bool in_space(const float3 & dim_len, const sph & pnt)
 
 void move_pnt(const float3 & dim_len, const sph & center_sph, sph & moved_sph)
 {
-    float old_dist = dist(center_sph, moved_sph);
+    float old_dist = pnt_dist(center_sph, moved_sph);
     if (old_dist < EPS)
     {
         moved_sph = GenRndPoint(dim_len);
@@ -166,7 +167,7 @@ Iterator my_max_element(Iterator begin, Iterator end, BinaryPredicate gt_op)
 int GenMaxPacked(const int max_cnt, const float3 dim_len, h_sph_list & spheres)
 {
     int curr_cnt = 0;
-    int max_holost = dim_len.x * dim_len.y * dim_len.z;
+    int max_holost = (int)(dim_len.x * dim_len.y * dim_len.z);
     int holost = 0;
     
     const int max_moves = 100;
@@ -230,22 +231,71 @@ void SaveToFile(const h_sph_list & spheres, const char * filename)
     fclose(outFile);
 }
 
-bool IsPercolated( const h_sph_list & spheres, const DirGraph & g )
+bool IsPercolated( const h_sph_list & spheres, std::vector<int> clusters, const float3 sz )
 {
+    set<int> * borders = new set<int>[6];
     // find all spheres on the borders
+    for (int sph_idx = 0; sph_idx < spheres.size(); ++sph_idx)
+    {
+        sph curr_sph = spheres[sph_idx];
+        if (curr_sph.x-curr_sph.w < 0)
+            borders[0].insert(clusters[sph_idx]);
+        if (curr_sph.x+curr_sph.w > sz.x)
+            borders[1].insert(clusters[sph_idx]);
+        if (curr_sph.y-curr_sph.w < 0)
+            borders[2].insert(clusters[sph_idx]);
+        if (curr_sph.y+curr_sph.w > sz.y)
+       	    borders[3].insert(clusters[sph_idx]);
+        if (curr_sph.z-curr_sph.w < 0)
+            borders[4].insert(clusters[sph_idx]);
+        if (curr_sph.z+curr_sph.w > sz.z)
+       	    borders[5].insert(clusters[sph_idx]);
+    }
     // and save cluster numbers
     // find intersection between borders
+    int min_size = borders[0].size();
+    for (int dim = 1; dim < 6; ++dim)
+    {
+        if (borders[dim].size() < min_size)
+            min_size = borders[dim].size();
+    }
+    if (min_size == 0)
+    {
+        printf("Not percolate\n");
+        return false;
+    }
+    vector<int> res(borders[0].begin(), borders[0].end());
+    vector<int>::iterator last_it = res.end();
+    vector<int> tmp(res.size());
+    for (int dim = 1; dim < 6; ++dim)
+    {
+        vector<int>::iterator it = set_intersection(res.begin(), last_it, borders[dim].begin(), borders[dim].end(), tmp.begin());
+        int len = it - tmp.begin();
+        if (len == 0)
+        {
+            printf("Non perc [%d]\n", dim);
+            return false;
+        }
+        last_it = copy(tmp.begin(), it, res.begin()) + 1;
+    }
+    delete [] borders;
+    printf("Percolated clusters: ");
+    for (vector<int>::iterator it = res.begin(); it != last_it; ++it)
+        printf("%d ", *it);
+    printf("\n");
+    return true;
 }
 
 void RemovePoints( const h_sph_list & spheres )
 {    
     DirGraph vg(spheres.size()); 
-    printf("Convert points to graph... ");
+    printf("Convert points to graph (max_overlapping = %f)... \n", max_overlapping);
     for (int curr_vertex = 0; curr_vertex < spheres.size(); ++curr_vertex)
         for (int adj_vertex = curr_vertex+1; adj_vertex < spheres.size(); ++adj_vertex)
-            if (is_overlapped(spheres[curr_vertex], spheres[adj_vertex], max_overlapping))
+            if (slightly_overlap(spheres[curr_vertex], spheres[adj_vertex], max_overlapping))
             {
                 add_edge(curr_vertex, adj_vertex, vg);
+                printf("Edge: %d and %d\n", curr_vertex, adj_vertex);
             }
     printf("Done.\n");
     
@@ -262,17 +312,18 @@ void
 runTest( int argc, char** argv) 
 {
     const float dim_sz = 50.0f;
-    const double e_max = 0.5f;
+    const double e_max = 0.4f;
     const double r = 2.0f;
     
     const float3 sz = make_float3(dim_sz,dim_sz,dim_sz);
     const double vol = sz.x * sz.y * sz.z;
     const double vol_sph = (4.0/3.0) * 3.14159 * (r*r*r);
-    const int max_cnt = vol / vol_sph * (1.0-e_max);
+    const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
     
     h_sph_list spheres(max_cnt);
     cout << "Start\n";
     int cnt = GenMaxPacked(max_cnt, sz, spheres);
+    RemovePoints(spheres);
     h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
     
     SaveToFile( h_spheres, "res.dat");
