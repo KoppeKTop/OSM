@@ -27,9 +27,6 @@
 // includes, kernels
 #include <OSM_kernel.cu>
 
-// includes cpp functions
-#include <OSM.h>
-
 typedef float4 sph;
 typedef thrust::device_vector<float4> d_sph_list;
 typedef thrust::host_vector<float4>   h_sph_list;
@@ -231,7 +228,30 @@ void SaveToFile(const h_sph_list & spheres, const char * filename)
     fclose(outFile);
 }
 
-bool IsPercolated( const h_sph_list & spheres, std::vector<int> clusters, const float3 sz )
+h_sph_list * LoadFromFile( const char * filename)
+{
+    FILE * inFile = fopen(filename, "rb");
+    sph curr_pnt;
+    vector<sph> tmp;
+    while(fread(&curr_pnt, sizeof(curr_pnt.x), 4, inFile))
+        tmp.push_back( curr_pnt );
+    h_sph_list * spheres = new h_sph_list(tmp.begin(), tmp.end());
+    return spheres;
+}
+
+template <typename OutputType>
+void print(OutputType v)
+{
+    cout << v << " ";
+}
+
+template <typename OutputType>
+void println(OutputType v)
+{
+    cout << v << endl;
+}
+
+vector<int> * PercolatedClusters( const h_sph_list & spheres, std::vector<int> clusters, const float3 sz )
 {
     set<int> * borders = new set<int>[6];
     // find all spheres on the borders
@@ -262,33 +282,41 @@ bool IsPercolated( const h_sph_list & spheres, std::vector<int> clusters, const 
     if (min_size == 0)
     {
         printf("Not percolate\n");
-        return false;
+        return NULL;
     }
-    vector<int> res(borders[0].begin(), borders[0].end());
-    vector<int>::iterator last_it = res.end();
-    vector<int> tmp(res.size());
+    vector<int> * res = new vector<int>(borders[0].begin(), borders[0].end());
+    vector<int>::iterator last_it = res->end();
+    vector<int> tmp(res->size());
     for (int dim = 1; dim < 6; ++dim)
     {
-        vector<int>::iterator it = set_intersection(res.begin(), last_it, borders[dim].begin(), borders[dim].end(), tmp.begin());
-        int len = it - tmp.begin();
-        if (len == 0)
+        vector<int>::iterator it = set_intersection(res->begin(), last_it, borders[dim].begin(), borders[dim].end(), tmp.begin());
+        if (it - tmp.begin() == 0)
         {
             printf("Non perc [%d]\n", dim);
-            return false;
+            return NULL;
         }
-        last_it = copy(tmp.begin(), it, res.begin()) + 1;
+        last_it = copy(tmp.begin(), it, res->begin());
     }
+    res->resize(last_it-res->begin());
     delete [] borders;
     printf("Percolated clusters: ");
-    for (vector<int>::iterator it = res.begin(); it != last_it; ++it)
-        printf("%d ", *it);
+        
+    for (vector<int>::iterator it = res->begin(); it != res->end(); ++it)
+    {
+        int cnt = 0;
+        for (vector<int>::iterator cl_it = clusters.begin(); cl_it != clusters.end(); ++cl_it)
+             if (*cl_it == *it) cnt++;
+        printf("%d (%d) ", *it, cnt);
+    }
     printf("\n");
-    return true;
+    return res;
 }
 
-void RemovePoints( const h_sph_list & spheres )
+
+vector<sph> * RemovePoints( const h_sph_list & spheres, const float3 sz, const min_cnt )
 {    
     DirGraph vg(spheres.size()); 
+    vector<sph> * tmp_sph = new vector<sph>(spheres.begin(), spheres.end());
     printf("Convert points to graph (max_overlapping = %f)... \n", max_overlapping);
     for (int curr_vertex = 0; curr_vertex < spheres.size(); ++curr_vertex)
         for (int adj_vertex = curr_vertex+1; adj_vertex < spheres.size(); ++adj_vertex)
@@ -303,9 +331,14 @@ void RemovePoints( const h_sph_list & spheres )
     int num = 
     connected_components(vg, make_iterator_property_map(c.begin(), get(vertex_index, vg), c[0]));
     
-    printf("%d clusters in structure\n", num);
-
-    
+    vector<int> clusters * PercolatedClusters(spheres, c, sz);
+    if (!clusters) 
+    {
+        printf("Can\'t remove points!\n");
+        delete [] tmp_sph;
+        return NULL;
+    }
+    // 
 }
 
 void
@@ -320,14 +353,16 @@ runTest( int argc, char** argv)
     const double vol_sph = (4.0/3.0) * 3.14159 * (r*r*r);
     const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
     
-    h_sph_list spheres(max_cnt);
+    cout << "Loading\n";
+    h_sph_list * spheres = LoadFromFile("res.dat");
     cout << "Start\n";
-    int cnt = GenMaxPacked(max_cnt, sz, spheres);
-    RemovePoints(spheres);
-    h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
+    //int cnt = GenMaxPacked(max_cnt, sz, spheres);
     
-    SaveToFile( h_spheres, "res.dat");
+    RemovePoints(*spheres, sz);
+    //h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
+    //
+    //SaveToFile( h_spheres, "res.dat");
     
-    cout << "Done. Points: " << cnt << " of " << max_cnt
-    << ". E = " << (1 - vol_sph * cnt / vol) << endl;
+    //cout << "Done. Points: " << cnt << " of " << max_cnt
+    //<< ". E = " << (1 - vol_sph * cnt / vol) << endl;
 }
