@@ -216,7 +216,7 @@ class OutputItem
        std::ofstream * stream_;
 };
 
-void SaveToFile(const h_sph_list & spheres, const char * filename)
+void SaveToFile(const vector<sph> & spheres, const char * filename)
 {
     FILE * outFile = fopen(filename, "wb");
     
@@ -226,6 +226,7 @@ void SaveToFile(const h_sph_list & spheres, const char * filename)
     }
     
     fclose(outFile);
+    printf("%d spheres saved to file %s\n", spheres.size(), filename);
 }
 
 h_sph_list * LoadFromFile( const char * filename)
@@ -251,8 +252,20 @@ void println(OutputType v)
     cout << v << endl;
 }
 
-vector<int> * PercolatedClusters( const h_sph_list & spheres, std::vector<int> clusters, const float3 sz )
+vector<vector<sph> > * PercolatedClusters( const list<sph> & spheres, const float3 sz )
 {
+    DirGraph vg(spheres.size()); 
+    for (int curr_vertex = 0; curr_vertex < spheres.size(); ++curr_vertex)
+        for (int adj_vertex = curr_vertex+1; adj_vertex < spheres.size(); ++adj_vertex)
+            if (slightly_overlap(spheres[curr_vertex], spheres[adj_vertex], max_overlapping))
+            {
+                add_edge(curr_vertex, adj_vertex, vg);
+            }
+    
+    std::vector<int> clusters(num_vertices(vg));
+    int num = 
+    connected_components(vg, make_iterator_property_map(clusters.begin(), get(vertex_index, vg), clusters[0]));
+
     set<int> * borders = new set<int>[6];
     // find all spheres on the borders
     for (int sph_idx = 0; sph_idx < spheres.size(); ++sph_idx)
@@ -282,63 +295,135 @@ vector<int> * PercolatedClusters( const h_sph_list & spheres, std::vector<int> c
     if (min_size == 0)
     {
         printf("Not percolate\n");
+        delete [] borders;
         return NULL;
     }
-    vector<int> * res = new vector<int>(borders[0].begin(), borders[0].end());
-    vector<int>::iterator last_it = res->end();
-    vector<int> tmp(res->size());
+    vector<int> * perc_clusters = new vector<int>(borders[0].begin(), borders[0].end());
+    vector<int>::iterator last_it = perc_clusters->end();
+    vector<int> tmp(perc_clusters->size());
     for (int dim = 1; dim < 6; ++dim)
     {
-        vector<int>::iterator it = set_intersection(res->begin(), last_it, borders[dim].begin(), borders[dim].end(), tmp.begin());
+        vector<int>::iterator it = set_intersection(perc_clusters->begin(), last_it, borders[dim].begin(), borders[dim].end(), tmp.begin());
         if (it - tmp.begin() == 0)
         {
             printf("Non perc [%d]\n", dim);
+            delete [] borders;
             return NULL;
         }
-        last_it = copy(tmp.begin(), it, res->begin());
+        last_it = copy(tmp.begin(), it, perc_clusters->begin());
     }
-    res->resize(last_it-res->begin());
-    delete [] borders;
-    printf("Percolated clusters: ");
-        
-    for (vector<int>::iterator it = res->begin(); it != res->end(); ++it)
-    {
-        int cnt = 0;
+    res->resize(last_it-perc_clusters->begin());
+    
+    vector<vector <sph> > * res = new vector<vector <int> >(perc_clusters->size());
+    
+    int clust_idx = 0;
+    for (vector<int>::iterator it = perc_clusters->begin(), clust_idx=0; 
+         it != perc_clusters->end(); ++it, ++clust_idx)
         for (vector<int>::iterator cl_it = clusters.begin(); cl_it != clusters.end(); ++cl_it)
-             if (*cl_it == *it) cnt++;
-        printf("%d (%d) ", *it, cnt);
-    }
-    printf("\n");
+            if (*cl_it == *it)
+                res->at(clust_idx).push_back(spheres[cl_it-clusters.begin()]);
     return res;
 }
 
+double Volume(double radius)
+{
+    return (4.0/3.0) * 3.14159 * (radius*radius*radius);
+}
 
-vector<sph> * RemovePoints( const h_sph_list & spheres, const float3 sz, const min_cnt )
-{    
-    DirGraph vg(spheres.size()); 
-    vector<sph> * tmp_sph = new vector<sph>(spheres.begin(), spheres.end());
-    printf("Convert points to graph (max_overlapping = %f)... \n", max_overlapping);
-    for (int curr_vertex = 0; curr_vertex < spheres.size(); ++curr_vertex)
-        for (int adj_vertex = curr_vertex+1; adj_vertex < spheres.size(); ++adj_vertex)
-            if (slightly_overlap(spheres[curr_vertex], spheres[adj_vertex], max_overlapping))
-            {
-                add_edge(curr_vertex, adj_vertex, vg);
-                printf("Edge: %d and %d\n", curr_vertex, adj_vertex);
-            }
-    printf("Done.\n");
-    
-    std::vector<int> c(num_vertices(vg));
-    int num = 
-    connected_components(vg, make_iterator_property_map(c.begin(), get(vertex_index, vg), c[0]));
-    
-    vector<int> clusters * PercolatedClusters(spheres, c, sz);
-    if (!clusters) 
+template <class SphSequense>
+double CalcVolume(const SphSequense & spheres)
+{
+    double res = 0;
+    for (SphSequense::iterator it = spheres.begin(); it != spheres.end(); ++it)
+    {
+        res += Volume(it->w);
+    }
+    return res;
+}
+
+list<sph> * RemovePoints( const h_sph_list & spheres, const float3 sz, const double min_volume )
+{
+    list<sph> tmp_sph(spheres.begin(), spheres.end());
+    vector<vector<sph> > * clusters = PercolatedClusters(tmp_sph, sz);
+    if (!clusters)
     {
         printf("Can\'t remove points!\n");
-        delete [] tmp_sph;
         return NULL;
     }
-    // 
+    // choose biggest cluster:
+    int max_cluster_size = CalcVolume(clusters->at(0));
+    int max_cluster_idx = 0;
+    for (int i = 1; i < clusters->size(); ++i)
+    {
+        double vol = CalcVolume(clusters->at(i))
+        if (vol > max_cluster_size)
+        {
+            max_cluster_size = vol;
+            max_cluster_idx = i;
+        }
+    }
+    if (max_cluster_size < min_volume)
+    {
+        printf("Percolated cluster too small\n");
+        delete clusters;
+        return NULL;
+    }
+    tmp_sph.resize(clusters->at(max_cluster_idx).size());
+    copy(clusters->at(max_cluster_idx).begin(), clusters->at(max_cluster_idx).end(), tmp_sph.begin());
+    delete clusters;
+    
+    int holost_iter = 0;
+    while(1)
+    {
+        if (holost_iter < 3*tmp_sph.size())
+        {
+            printf("Cant achieve target volume\n");
+            return NULL;
+        }
+        int del_idx = rand() % tmp_sph.size();
+        sph save_sph = tmp_sph[del_idx];
+        tmp_sph.erease(tmp_sph.begin() + del_idx);
+        clusters = PercolatedClusters(tmp_sph, sz);
+        if (! clusters)
+        {
+            tmp_sph.push_back(save_sph);
+            holost_iter++;
+            continue;
+        }
+        // choose biggest cluster:
+        int max_cluster_size = CalcVolume(clusters->at(0));
+        int max_cluster_idx = 0;
+        for (int i = 1; i < clusters->size(); ++i)
+        {
+            double vol = CalcVolume(clusters->at(i))
+            if (vol > max_cluster_size)
+            {
+                max_cluster_size = vol;
+                max_cluster_idx = i;
+            }
+        }
+        if (max_cluster_size < 0.95*min_volume)
+        {
+            tmp_sph.push_back(save_sph);
+            holost_iter++;
+            printf("Cluster too small\n");
+            delete clusters;
+            continue;
+        }
+        if (max_cluster_size < min_volume)
+        {
+            vector<sph> *res = new vector<sph>(clusters->at(max_cluster_idx).begin(), clusters->at(max_cluster_idx).end());
+            delete clusters;
+            return res;
+        }
+        tmp_sph.resize(clusters->at(max_cluster_idx).size());
+        copy(clusters->at(max_cluster_idx).begin(), clusters->at(max_cluster_idx).end(), tmp_sph.begin());
+        delete clusters;
+        holost_iter = 0;
+        printf("Current volume = %f, must be %f\n", max_cluster_size, min_volume);
+    }
+    // never come here
+    return NULL;
 }
 
 void
@@ -350,7 +435,7 @@ runTest( int argc, char** argv)
     
     const float3 sz = make_float3(dim_sz,dim_sz,dim_sz);
     const double vol = sz.x * sz.y * sz.z;
-    const double vol_sph = (4.0/3.0) * 3.14159 * (r*r*r);
+    const double vol_sph = Volume(r);
     const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
     
     cout << "Loading\n";
@@ -358,10 +443,10 @@ runTest( int argc, char** argv)
     cout << "Start\n";
     //int cnt = GenMaxPacked(max_cnt, sz, spheres);
     
-    RemovePoints(*spheres, sz);
+    vector<sph> * res = RemovePoints(*spheres, sz);
     //h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
     //
-    //SaveToFile( h_spheres, "res.dat");
+    SaveToFile( h_spheres, "res.dat");
     
     //cout << "Done. Points: " << cnt << " of " << max_cnt
     //<< ". E = " << (1 - vol_sph * cnt / vol) << endl;
