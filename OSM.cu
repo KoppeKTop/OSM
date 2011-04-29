@@ -124,13 +124,15 @@ bool in_space(const float3 & dim_len, const sph & pnt)
             0 <= pnt.z && pnt.z < dim_len.z);
 }
 
-void move_pnt(const float3 & dim_len, const sph & center_sph, sph & moved_sph)
+bool move_pnt(const float3 & dim_len, const sph & center_sph, sph & moved_sph)
+// returns true if point moved
+// returns false if created new point
 {
     float old_dist = pnt_dist(center_sph, moved_sph);
     if (old_dist < EPS)
     {
         moved_sph = GenRndPoint(dim_len);
-        return;
+        return false;
     }
     float r = min_dist(moved_sph.w, center_sph.w)/old_dist;
     moved_sph.x = (moved_sph.x - center_sph.x)*r + center_sph.x;
@@ -139,7 +141,9 @@ void move_pnt(const float3 & dim_len, const sph & center_sph, sph & moved_sph)
     if (!in_space(dim_len, moved_sph))
     {
         moved_sph = GenRndPoint(dim_len);
+        return false;
     }
+    return true;
 }
 
 ostream& operator<< (ostream& out, float4& item )
@@ -162,6 +166,15 @@ Iterator my_max_element(Iterator begin, Iterator end, BinaryPredicate gt_op)
     return result;
 }
 
+vector<sph> * CollectNeighbours( h_sph_list::const_iterator start, h_sph_list::const_iterator stop, const sph curr)
+{
+    vector<sph> * res = new vector<sph>;
+    for (; start != stop; ++start)
+        if (pnt_dist(*start, curr) < 3 * curr.w)
+            res->push_back(*start);
+    return res;
+}
+
 int GenMaxPacked(const int max_cnt, const float3 dim_len, h_sph_list & spheres)
 {
     int curr_cnt = 0;
@@ -180,16 +193,20 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, h_sph_list & spheres)
         }
         bool add = false;
         int moves = 0;
+        vector<sph> * neigh = CollectNeighbours(spheres.begin(), spheres.begin() + curr_cnt, new_pnt);
         while (moves++ < max_moves)
         {
-            sph over_sph = *(my_max_element(spheres.begin(), spheres.begin() + curr_cnt, dist_gt(new_pnt)) );
+            sph over_sph = *(my_max_element(neigh.begin(), neigh.end(), dist_gt(new_pnt)) );
             if (is_overlapped(over_sph, new_pnt, max_overlapping)) {
-                move_pnt(dim_len, over_sph, new_pnt);
+                if (! move_pnt(dim_len, over_sph, new_pnt) )    {
+                    neigh = CollectNeighbours(spheres.begin(), spheres.begin() + curr_cnt, new_pnt);
+                }
             } else {
                 add = true;
                 break;
             }
         }
+        delete neigh;
         if (add) {
             spheres[curr_cnt++] = new_pnt;
             holost = 0;
