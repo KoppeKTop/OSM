@@ -109,6 +109,23 @@ struct dist_gt
     }
 };
 
+struct dist_less
+{   
+    sph curr;
+
+    dist_less(sph c)    {   curr = c;   }
+
+    __host__ __device__
+    bool operator()(const sph & first, const sph & second) const
+    {
+        float l1 = overlapping(first.w, curr.w, pnt_dist(first, curr));
+        float l2 = overlapping(second.w, curr.w, pnt_dist(second, curr));
+
+        //printf("L1 = %f, L2 = %f\n", l1, l2);
+        return l1 < l2;
+    }
+};
+
 float min_dist(float r1, float r2)
 {
     float c = SQR(max_overlapping * (r1+r2));
@@ -146,7 +163,7 @@ bool move_pnt(const float3 & dim_len, const sph & center_sph, sph & moved_sph)
     return true;
 }
 
-ostream& operator<< (ostream& out, float4& item )
+ostream& operator<< (ostream& out, const float4& item )
 {
     out << item.x << ", " << item.y << ", " << item.z << ", " << item.w;
     return out;
@@ -166,12 +183,14 @@ Iterator my_max_element(Iterator begin, Iterator end, BinaryPredicate gt_op)
     return result;
 }
 
-vector<sph> * CollectNeighbours( h_sph_list::const_iterator start, h_sph_list::const_iterator stop, const sph curr)
+set<sph, dist_gt> * CollectNeighbours( h_sph_list::const_iterator start, h_sph_list::const_iterator stop, const sph curr)
+// returns sorted set of neibours
 {
-    vector<sph> * res = new vector<sph>;
+    
+    set<sph, dist_gt> * res = new set<sph, dist_gt>( dist_gt(curr) );
     for (; start != stop; ++start)
         if (pnt_dist(*start, curr) < 3 * curr.w)
-            res->push_back(*start);
+            res->insert(*start);
     return res;
 }
 
@@ -192,26 +211,52 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, h_sph_list & spheres)
             continue;
         }
         bool add = false;
+        bool maybe_add = false;
         int moves = 0;
-        vector<sph> * neigh = CollectNeighbours(spheres.begin(), spheres.begin() + curr_cnt, new_pnt);
+        set<sph, dist_gt> * neigh = CollectNeighbours(spheres.begin(), spheres.begin() + curr_cnt, new_pnt);
         while (moves++ < max_moves)
         {
-            sph over_sph = *(my_max_element(neigh.begin(), neigh.end(), dist_gt(new_pnt)) );
+            if (neigh->empty())	{
+                add = true;
+                break;
+            }
+            sph over_sph = *(neigh->begin());
             if (is_overlapped(over_sph, new_pnt, max_overlapping)) {
+                maybe_add = false;
                 if (! move_pnt(dim_len, over_sph, new_pnt) )    {
-                    neigh = CollectNeighbours(spheres.begin(), spheres.begin() + curr_cnt, new_pnt);
+                    delete neigh;
+                    neigh = CollectNeighbours(spheres.begin(), spheres.begin() + curr_cnt, new_pnt); 
+                } else {
+                    set<sph, dist_gt> * tmp = new set<sph, dist_gt>(dist_gt(new_pnt));
+                    tmp->insert(neigh->begin(), neigh->end());
+                    delete neigh;
+                    neigh = tmp;
                 }
             } else {
+                if (!maybe_add) {
+                    delete neigh;
+                    neigh = CollectNeighbours(spheres.begin(), spheres.begin() + curr_cnt, new_pnt);
+                    maybe_add = true;
+                    continue;
+                }
                 add = true;
                 break;
             }
         }
-        delete neigh;
         if (add) {
+
+            // test
+//            for (int i = 0; i < curr_cnt; ++i)
+//                if (is_overlapped(spheres[i], new_pnt, max_overlapping) )
+//                {
+//                    printf("Error!\n");
+//                }
+
             spheres[curr_cnt++] = new_pnt;
             holost = 0;
             cout << "Point #" << curr_cnt << " of " << max_cnt << ": " << new_pnt << endl;
         }
+        delete neigh;
     }
     return curr_cnt;
 }
@@ -478,14 +523,27 @@ runTest( int argc, char** argv)
     cout << "Start\n";
     h_sph_list spheres(max_cnt);
     int cnt = GenMaxPacked(max_cnt, sz, spheres);
+
+    // test
+    for (int idx1 = 0; idx1 < spheres.size(); ++idx1)
+    {
+        for (int idx2 = idx1+1; idx2 < spheres.size(); ++idx2)
+        {
+            if (is_overlapped(spheres[idx1], spheres[idx2], max_overlapping))
+            {
+                cout << "Test failed! 1:" << spheres[idx1] << " 2: " << spheres[idx2] << endl;
+               // return;
+            }
+        }
+    }
     vector<sph> * v_spheres = new vector<sph>(spheres.begin(), spheres.begin() + cnt);
-    SaveToFile(*v_spheres, "max_100_30.dat");
+    SaveToFile(*v_spheres, "max_100_30_fast.dat");
     double need_e = 0.9;
     double need_vol = vol*(1-need_e);
     vector<sph> * res = RemovePoints(*v_spheres, sz, need_vol);
     //h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
     //
-    SaveToFile( *res, "res_100_90.dat");
+    SaveToFile( *res, "res_100_90_fast.dat");
     
     //cout << "Done. Points: " << cnt << " of " << max_cnt
     //<< ". E = " << (1 - vol_sph * cnt / vol) << endl;
