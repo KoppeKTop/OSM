@@ -258,7 +258,8 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, h_sph_list & spheres)
 
             spheres[curr_cnt++] = new_pnt;
             holost = 0;
-            cout << "Point #" << curr_cnt << " of " << max_cnt << ": " << new_pnt << endl;
+            if (curr_cnt % (max_cnt / 10) == 0)
+                cout << "Point #" << curr_cnt << " of " << max_cnt << endl;
         }
         delete neigh;
     }
@@ -540,20 +541,20 @@ vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const 
 void
 runTest( int argc, char** argv) 
 {
-    const float dim_sz = 100.0f;
-//    const double e_max = 0.3f;
+    const float dim_sz = 500.0f;
+    const double e_max = 0.3f;
     const double r = 2.0f;
     
     const float3 sz = make_float3(dim_sz,dim_sz,dim_sz);
     const double vol = sz.x * sz.y * sz.z;
     const double vol_sph = Volume(r);
-//    const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
+    const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
     
-    cout << "Loading\n";
-    vector<sph> * v_spheres = LoadFromFile("max_100_30_fast.dat");
-//    cout << "Start\n";
-//    h_sph_list spheres(max_cnt);
-//    int cnt = GenMaxPacked(max_cnt, sz, spheres);
+//    cout << "Loading\n";
+//    vector<sph> * v_spheres = LoadFromFile("max_100_30_fast.dat");
+    cout << "Start\n";
+    h_sph_list spheres(max_cnt);
+    int cnt = GenMaxPacked(max_cnt, sz, spheres);
 
     // test
 //    for (int idx1 = 0; idx1 < spheres.size(); ++idx1)
@@ -567,8 +568,8 @@ runTest( int argc, char** argv)
 //            }
 //        }
 //    }
-//    vector<sph> * v_spheres = new vector<sph>(spheres->begin(), spheres->end());
-//    SaveToFile(*v_spheres, "max_100_30_fast.dat");
+    vector<sph> * v_spheres = new vector<sph>(spheres.begin(), spheres.end());
+    SaveToFile(*v_spheres, "max_500_30_fast_2.dat");
     double need_e = 0.9;
     double need_vol = vol*(1-need_e);
     vector<sph> * res = RemovePoints(*v_spheres, sz, need_vol);
@@ -586,7 +587,7 @@ runTest( int argc, char** argv)
 //    }
     //h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
     //
-    SaveToFile( *res, "res_100_90_fast.dat");
+    SaveToFile( *res, "res_500_90_fast_2.dat");
     
     //cout << "Done. Points: " << cnt << " of " << max_cnt
     //<< ". E = " << (1 - vol_sph * cnt / vol) << endl;
