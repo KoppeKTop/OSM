@@ -191,10 +191,10 @@ public:
         }   else    {
             int old_sz  = vertex_vector.size();
             printf("vertex_vector.size() = %d, now = ", vertex_vector.size());
-            int res = vertex_vector.back();
-            vertex_vector.erase(vertex_vector.begin() + (vertex_vector.size()-1));
+            int res = vertex_vector[0];
+            vertex_vector.erase(vertex_vector.begin() );
             printf("%d \n", vertex_vector.size());
-            printf("Popped: %d, last now = %d\n", res, vertex_vector.back());
+            printf("Popped: %d, last now = %d\n", res, vertex_vector[0]);
             if (old_sz - vertex_vector.size() != 1)
             {
                 printf("removed strange\n");
@@ -230,10 +230,9 @@ public:
         {
             if (perc_sph->at(perc_cluster_idx)[j] != i)
             {
-                if (deleted_vertexes.find(i) == deleted_vertexes.end() )
+                if (deleted_vertexes.find(i) != deleted_vertexes.end() )
                 // already deleted
                     continue;
-                int prev_size = vertex_vector.size();
                 remove(vertex_vector.begin(), vertex_vector.end(), i);
                 DeleteVertex(i);
             }
@@ -244,6 +243,7 @@ public:
         }
         prev_perc_sph = perc_sph->at(perc_cluster_idx);
         delete perc_sph;
+        perc_sph = NULL;
     }
     
     int GetPercClustersCnt()
