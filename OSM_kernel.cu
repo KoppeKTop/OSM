@@ -46,7 +46,7 @@ slightly_overlap(const float4 pnt1, const float4 pnt2, const float max_overlappi
 }
 
 //__global__ void 
-//overlap_list(float4 * spheres, float4 curr_sph, int * results, float max_overlapping, int curr_cnt)
+//overlap_list(float4 * spheres, float4 curr_sph, int * results, int * res_cnt, float max_overlapping, int curr_cnt)
 //{
 //    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 //    if (idx < curr_cnt)
@@ -54,10 +54,25 @@ slightly_overlap(const float4 pnt1, const float4 pnt2, const float max_overlappi
 //        float4 cmp_sph = spheres[idx];
 //        if (is_overlapped(curr_sph, cmp_sph, max_overlapping))
 //        {
-//            int old_cnt = atomicAdd(results, 1);
+//            int old_cnt = atomicAdd(res_cnt, 1);
 //            results[old_cnt+1] = idx;
 //        }
 //    }
 //}
+
+__global__ void 
+nei_list(float4 * spheres, float4 curr_sph, int * results, int * res_cnt, int curr_cnt)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < curr_cnt)
+    {
+        float4 cmp_sph = spheres[idx];
+        if (pnt_dist(cmp_sph, curr_sph) < 3 * curr_sph.w)
+        {
+            int old_cnt = atomicAdd(res_cnt, 1);
+            results[old_cnt] = idx;
+        }
+    }
+}
 
 #endif // #ifndef _OSM_KERNEL_H_
