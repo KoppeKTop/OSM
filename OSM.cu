@@ -8,6 +8,7 @@
 #include <string.h>
 #include <math.h>
 #include <time.h>
+#include <ctime>
 #include <fstream>
 
 #include <vector>
@@ -110,9 +111,14 @@ double randf()
     return (double)rand()/RAND_MAX;
 }
 
-float GetSphereRadius()
+float GetSphereRadius(float ret_r = -1)
 {
-    return 2.0;
+    static float r = 0;
+    if (ret_r > 0)
+    {
+        r = ret_r;
+    }
+    return r;
 }
 
 sph GenRndPoint(float3 dim_len)
@@ -226,51 +232,79 @@ set<sph, dist_gt> * CollectNeighbours( h_sph_list::const_iterator start, h_sph_l
 {
     set<sph, dist_gt> * res = new set<sph, dist_gt>( dist_gt(curr) );
     const int cnt = stop - start;
-#pragma omp parallel for shared(cnt, res, curr)
+// #pragma omp parallel for shared(cnt, res, curr)
     for (int idx = 0; idx < cnt; idx++)
     {
         sph curr_nei = *(start+idx);
         if (pnt_dist(curr_nei, curr) < 3 * curr.w)
         {
-            #pragma omp single
+//            #pragma omp single
             res->insert(curr_nei);
         }
     }
     return res;
 }
 
-set<sph, dist_gt> * CollectNeighbours( d_sph_list & d_spheres, h_sph_list & spheres, int cnt, const sph curr_sph)
+set<sph, dist_gt> * CollectNeighbours( sph * d_sph, h_sph_list & spheres, int cnt, const sph curr_sph)
 // GPU version
 {
 //    printf("Start to CollectNeighbours\n");
+    const int THREADS_PER_BLOCK = 256;
+    if (cnt < THREADS_PER_BLOCK)
+    {
+        return CollectNeighbours(spheres.begin(), spheres.begin()+cnt, curr_sph);
+    }
     int * d_results_idx = NULL;
     int * d_res_cnt = NULL;
+    
     const int max_results = 1000;
     const int res_sz = max_results * sizeof(*d_results_idx);
-    const int THREADS_PER_BLOCK = 512;
     cutilSafeCall(cudaMalloc((void **) &d_results_idx, res_sz));
+    thrust::device_ptr<int> t_results_idx(d_results_idx);
     cutilSafeCall(cudaMemset(d_results_idx, 0, res_sz));
     cutilSafeCall(cudaMalloc((void **) &d_res_cnt, sizeof(*d_res_cnt)) );
+    thrust::device_ptr<int> t_res_cnt(d_res_cnt);
     cutilSafeCall(cudaMemset(d_res_cnt, 0, sizeof(*d_res_cnt)));
-    int block = (THREADS_PER_BLOCK);
-    int grid = ( cnt / THREADS_PER_BLOCK + (cnt % THREADS_PER_BLOCK == 0)?0:1 );
+    
+//    cout << "Curr d_res_cnt: " << t_res_cnt[0] << endl;
+//    cout << "Curr d_curr_sph: " << t_curr_sph[0] << endl;
+//    cout << "Curr sph: " << curr_sph << endl;
+//    cout << "Curr d_cnt: " << t_cnt[0] << endl;
+    
+    
+    int block = THREADS_PER_BLOCK;
+    int grid = cnt / THREADS_PER_BLOCK;
+    if (cnt % THREADS_PER_BLOCK != 0) grid += 1;
+//    cout << grid << " " << cnt << " " << cnt / THREADS_PER_BLOCK << endl;
 //    printf("Start GPU\n");
-    sph * d_sph = thrust::raw_pointer_cast(&d_spheres[0]);
+//    sph * d_sph = thrust::raw_pointer_cast(&d_spheres[0]);
 //    printf("d_sph = %p\n", d_sph);
-    nei_list<<<grid, block>>>(d_sph, curr_sph, d_results_idx, d_res_cnt, cnt);
+    nei_list<<<dim3(grid,1), dim3(block, 1, 1)>>>(d_sph, curr_sph, d_results_idx, d_res_cnt, cnt);
     cutilSafeCall(cudaThreadSynchronize());
+    cutilSafeCall(cudaGetLastError());
 //    printf("GPU done\n");
     
-    int results_cnt = 0;
-    cutilSafeCall(cudaMemcpy(&results_cnt, d_res_cnt, sizeof(int), cudaMemcpyDeviceToHost));
-    cutilSafeCall(cudaThreadSynchronize());
+    int results_cnt = t_res_cnt[0];
+//    cout << "Res cnt = " << results_cnt << endl;
+//    cutilSafeCall(cudaMemcpy(&results_cnt, d_res_cnt, sizeof(int), cudaMemcpyDeviceToHost));
+//    cutilSafeCall(cudaThreadSynchronize());
     
     set<sph, dist_gt> * res = new set<sph, dist_gt>( dist_gt(curr_sph) );
     if (results_cnt != 0)   
     {
         int * results_idx = new int[results_cnt];
-        cutilSafeCall(cudaMemcpy(results_idx, d_results_idx, results_cnt*sizeof(int), cudaMemcpyDeviceToHost));
-        cutilSafeCall(cudaThreadSynchronize());
+        try
+        {
+            thrust::copy(t_results_idx, t_results_idx+results_cnt, results_idx);
+        }
+        catch (thrust::system::system_error err)
+        {
+            cout << "Res_cnt = " << results_cnt << endl;
+            cout << results_idx << endl;
+            exit(100);
+        }
+//        cutilSafeCall(cudaMemcpy(results_idx, d_results_idx, results_cnt*sizeof(int), cudaMemcpyDeviceToHost));
+//        cutilSafeCall(cudaThreadSynchronize());
         
 //        printf("%d results copied\n", results_cnt);
         
@@ -287,25 +321,40 @@ set<sph, dist_gt> * CollectNeighbours( d_sph_list & d_spheres, h_sph_list & sphe
     
     //printf("CollectNeighbours end\n");
     
+//    set<sph, dist_gt> * tmp = CollectNeighbours(spheres.begin(), spheres.begin()+cnt, curr_sph);
+//    cout << "CollectNeighbours results:\n";
+//    set<sph, dist_gt>::const_iterator pnt;
+//    cout << "CPU (" << tmp->size() << ")\n";
+//    for (pnt = tmp->begin(); pnt != tmp->end(); ++pnt)
+//    {
+//        cout << *pnt << endl;
+//    }
+//    cout << "GPU (" << res->size() << ")\n";
+//    for (pnt = res->begin(); pnt != res->end(); ++pnt)
+//    {
+//        cout << *pnt << endl;
+//    }
+//    delete tmp;
     return res;
 }
 
 
-int GenMaxPacked(const int max_cnt, const float3 dim_len, d_sph_list & spheres)
+int GenMaxPacked(const int max_cnt, const float3 dim_len, sph * spheres)
 {
-    h_sph_list h_spheres = spheres;
+    h_sph_list h_spheres(max_cnt);
     int curr_cnt = 0;
-    int max_holost = (int)(dim_len.x * dim_len.y);
+    int max_holost = (int)(dim_len.x);
     int holost = 0;
     
-    const int max_moves = 100;
+    const int max_moves = 20;
     while (curr_cnt < max_cnt && holost++ < max_holost)
     {
         sph new_pnt = GenRndPoint(dim_len);
         //printf("New point (%i of %i): (%f, %f, %f)\n", curr_cnt, max_cnt, new_pnt.x, new_pnt.y, new_pnt.z);
         if (curr_cnt == 0) {
             h_spheres[curr_cnt] = new_pnt;
-            spheres[curr_cnt++] = new_pnt;
+            cutilSafeCall(cudaMemcpy(spheres+curr_cnt, &new_pnt, sizeof(sph), cudaMemcpyHostToDevice));
+            curr_cnt ++;
             holost = 0;
             continue;
         }
@@ -330,6 +379,8 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, d_sph_list & spheres)
                     tmp->insert(neigh->begin(), neigh->end());
                     delete neigh;
                     neigh = tmp;
+                    holost++;
+                    moves = 0;
                 }
             } else {
                 if (!maybe_add) {
@@ -351,13 +402,21 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, d_sph_list & spheres)
 //                    printf("Error!\n");
 //                }
             h_spheres[curr_cnt] = new_pnt;
-            spheres[curr_cnt++] = new_pnt;
+            cutilSafeCall(cudaMemcpy(spheres+curr_cnt, &new_pnt, sizeof(sph), cudaMemcpyHostToDevice));
+            curr_cnt ++;
             holost = 0;
             if (curr_cnt % (max_cnt / 10) == 0)
-                cout << "Point #" << curr_cnt << " of " << max_cnt << endl;
+            {
+                time_t time_since_epoch;
+                time( &time_since_epoch );
+                tm *current_time = localtime( &time_since_epoch );
+                
+                cout << "Point #" << curr_cnt << " of " << max_cnt << ": " << asctime( current_time );
+            }
         }
         delete neigh;
     }
+    printf("Generated %d points\n", curr_cnt);
     return curr_cnt;
 }
 
@@ -560,9 +619,54 @@ vector<sph> * ConvertIndToSph(const vector<sph> & spheres, const vector<int> & i
     return res;
 }
 
+UndirGraph * ConvertSphToGraph(const vector<sph> & spheres)
+{
+    d_sph_list d_sph(spheres.begin(), spheres.end());
+    
+    const int THREADS_CNT = 256;
+    int grid_dim = spheres.size()/THREADS_CNT;
+    if (spheres.size()/THREADS_CNT != 0) grid_dim += 1;
+    dim3 grid(grid_dim, 1);
+    dim3 block(THREADS_CNT, 1, 1);
+    
+    const int res_cnt = 100 + 1;
+    
+    int * d_results = NULL;
+    int * h_results = new int[res_cnt];
+    sph * d_spheres_ptr = thrust::raw_pointer_cast(&d_sph[0]);
+    const size_t res_sz = res_cnt * sizeof(int); // max 100 results + 0th element – res_cnt
+    
+    cudaMalloc((void **) &d_results, res_sz);
+    
+    UndirGraph * vg = new UndirGraph(spheres.size());
+    int curr_vertex;
+    for (curr_vertex = 0; curr_vertex < spheres.size(); ++curr_vertex)
+    {
+        cudaMemset(d_results, 0, res_sz);
+        slight_nei_list<<<grid, block>>>(d_spheres_ptr, curr_vertex, spheres.size(), max_overlapping, d_results);
+        cudaThreadSynchronize();
+        cudaMemcpy(h_results, d_results, res_sz, cudaMemcpyDeviceToHost);
+        cudaThreadSynchronize();
+        if (h_results[0] >= res_cnt)
+        {
+            printf("Too much results!\n");
+            exit(199);
+        }
+        for (int adj_vertex = 0; adj_vertex < h_results[0]; ++adj_vertex)
+        {
+            add_edge(curr_vertex, h_results[adj_vertex+1], *vg);
+        }
+    }
+    return vg;
+}
+
 vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const double min_volume )
 {
-    Percolation<Adjust, BorderIndex > perc(spheres.size(), Adjust(spheres, max_overlapping), BorderIndex(spheres, sz));
+    printf("Start to convert points... ");
+    UndirGraph * vg = ConvertSphToGraph(spheres);
+    printf("Done\n");
+    Percolation<Adjust, BorderIndex > perc(*vg, spheres.size(), Adjust(spheres, max_overlapping), BorderIndex(spheres, sz));
+    delete vg;
     
     if (!perc.IsPercolated())
     {
@@ -628,6 +732,7 @@ vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const 
             vector<sph> *res = ConvertIndToSph(spheres, perc.GetPercClusterItems(max_cluster_idx));
             return res;
         }
+        perc.StopSaving();
         perc.OnlyPerc(max_cluster_idx);
         printf("Current volume = %f, must be %f\n", max_cluster_size, min_volume);
     }
@@ -637,37 +742,61 @@ vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const 
 void
 runTest( int argc, char** argv) 
 {
-    const float dim_sz = 50.0f;
+    const float dim_sz = 500.0f;
     const double e_max = 0.3f;
-    const double r = 2.0f;
+    const float r = 3.0;
+    GetSphereRadius(r);
     
     const float3 sz = make_float3(dim_sz,dim_sz,dim_sz);
     const double vol = sz.x * sz.y * sz.z;
     const double vol_sph = Volume(r);
     const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
     
-//    cout << "Loading\n";
-//    vector<sph> * v_spheres = LoadFromFile("res_100_90_fast_2.dat");
-    cout << "Start\n";
-    d_sph_list d_spheres(max_cnt);
-    int cnt = GenMaxPacked(max_cnt, sz, d_spheres);
-    h_sph_list spheres(d_spheres.begin(), d_spheres.begin() + cnt);
-
-    // test
-    for (int idx1 = 0; idx1 < spheres.size(); ++idx1)
+    unsigned pref_gpu = 0;
+    if (argc > 1)
     {
-        for (int idx2 = idx1+1; idx2 < spheres.size(); ++idx2)
+        int res = sscanf(argv[1], "%u", &pref_gpu);
+        if (res == EOF)
         {
-            if (is_overlapped(spheres[idx1], spheres[idx2], max_overlapping))
-            {
-                cout << "Test failed! 1:" << spheres[idx1] << " 2: " << spheres[idx2] << endl;
-               // return;
-            }
+            printf("Using: %s [gpu_number]", argv[0]);
+            exit(10);
         }
     }
+    cutilSafeCall(cudaSetDevice((int)pref_gpu));
+    cout << "GPU#" << pref_gpu << endl;
+
+    cout << "Start\n";
+    
+//    cout << "Loading\n";
+//    vector<sph> * v_spheres = LoadFromFile("max_500_r25_gpu.dat");
+//    d_sph_list d_spheres(max_cnt);
+
+
+    sph * d_spheres_raw = NULL;
+    cutilSafeCall(cudaMalloc((void **) &d_spheres_raw, max_cnt*sizeof(sph)));
+    cutilSafeCall(cudaMemset(d_spheres_raw, 0, max_cnt*sizeof(sph)));
+    int cnt = GenMaxPacked(max_cnt, sz, d_spheres_raw);
+    thrust::device_ptr<sph> d_spheres(d_spheres_raw);
+    h_sph_list spheres(d_spheres, d_spheres + cnt);
+    cudaFree(d_spheres_raw);
+//    cout << "Test passed. Saving\n";
     vector<sph> * v_spheres = new vector<sph>(spheres.begin(), spheres.end());
-    SaveToFile(*v_spheres, "max_50_30_gpu.dat");
-    double need_e = 0.9; // 1.0-0.1/2.2;
+    SaveToFile(*v_spheres, "max_500_r30_gpu_2.dat");
+    
+    // test
+//    cout << "Start test\n";
+//    for (int idx1 = 0; idx1 < spheres.size(); ++idx1)
+//    {
+//        for (int idx2 = idx1+1; idx2 < spheres.size(); ++idx2)
+//        {
+//            if (is_overlapped(spheres[idx1], spheres[idx2], max_overlapping))
+//            {
+//                cout << "Test failed! 1:" << spheres[idx1] << " 2: " << spheres[idx2] << endl;
+//                exit(200);
+//            }
+//        }
+//    }
+    double need_e = 1.0-0.1/2.2;
     double need_vol = vol*(1-need_e);
     vector<sph> * res = RemovePoints(*v_spheres, sz, need_vol);
 
@@ -684,7 +813,8 @@ runTest( int argc, char** argv)
 //    }
     //h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
     //
-    SaveToFile( *res, "res_50_90_gpu.dat");
+    SaveToFile( *res, "res_500_r30_90_gpu_2.dat");
+    delete res;
     
     //cout << "Done. Points: " << cnt << " of " << max_cnt
     //<< ". E = " << (1 - vol_sph * cnt / vol) << endl;

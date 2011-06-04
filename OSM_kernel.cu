@@ -75,4 +75,19 @@ nei_list(float4 * spheres, float4 curr_sph, int * results, int * res_cnt, int cu
     }
 }
 
+__global__ void 
+slight_nei_list(float4 * spheres, int curr_sph_idx, int sph_cnt, float max_overlap, int * results)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx > curr_sph_idx && idx < sph_cnt)
+    {
+        float4 cmp_sph = spheres[idx];
+        if (slightly_overlap(cmp_sph, spheres[curr_sph_idx], max_overlap))
+        {
+            int old_cnt = atomicAdd(results, 1);
+            results[old_cnt+1] = idx;
+        }
+    }
+}
+
 #endif // #ifndef _OSM_KERNEL_H_

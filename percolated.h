@@ -22,28 +22,33 @@ using namespace boost;
 typedef adjacency_list< vecS, vecS, undirectedS > UndirGraph;
 typedef graph_traits< UndirGraph >::vertex_descriptor Vertex;
 typedef graph_traits< UndirGraph >::out_edge_iterator OutEdgeIter;
+typedef graph_traits< UndirGraph >::adjacency_iterator AdjIter;
 typedef graph_traits< UndirGraph >::edge_descriptor EdgeDescriptor;
 
 typedef float4 sph;
+
+typedef map<Vertex, vector<Vertex> > EdgesMap;
 
 template < typename BinaryOperationFunctor, typename Functor>
 class Percolation
 {
 public:
-    Percolation( int sph_cnt, 
+    Percolation( const UndirGraph & gr,
+                 int sph_cnt, 
                  BinaryOperationFunctor is_adjust, 
                  Functor get_border_idx):
-                 perc_sph(NULL), old_vg(NULL)
+                 perc_sph(NULL), _is_saving(false)
     {
-        vg = new UndirGraph(sph_cnt);
-        int curr_vertex, adj_vertex;
-        for (curr_vertex = 0; curr_vertex < sph_cnt; ++curr_vertex)
-            for (adj_vertex = curr_vertex+1; adj_vertex < sph_cnt; ++adj_vertex)
-                if (is_adjust(curr_vertex, adj_vertex) )
-                {
-                    add_edge(curr_vertex, adj_vertex, *vg);
-                }
-                
+//        vg = new UndirGraph(sph_cnt);
+//        int curr_vertex, adj_vertex;
+//        for (curr_vertex = 0; curr_vertex < sph_cnt; ++curr_vertex)
+//            for (adj_vertex = curr_vertex+1; adj_vertex < sph_cnt; ++adj_vertex)
+//                if (is_adjust(curr_vertex, adj_vertex) )
+//                {
+//                    add_edge(curr_vertex, adj_vertex, *vg);
+//                }
+        vg = new UndirGraph(gr); 
+        
         vertex_vector.resize(sph_cnt);
         for (int i = 0; i < sph_cnt; ++i)
         {
@@ -69,7 +74,7 @@ public:
     ~Percolation()
     {
         delete vg;
-        delete old_vg;
+//        delete old_vg;
         delete [] border_vertex;
         delete perc_sph;
     }
@@ -77,16 +82,35 @@ public:
     // permutation procedures:
     void SaveState()
     {
-        log_it("Save state");
-        if (old_vg) delete old_vg;
-        old_vg = new UndirGraph(*vg);
-        log_it("Done");
+        _is_saving = true;
+        _saving_edges.clear();
+//        log_it("Save state");
+//        if (old_vg) delete old_vg;
+//        old_vg = new UndirGraph(*vg);
+//        log_it("Done");
+    }
+    
+    void StopSaving()
+    {
+        _is_saving = false;
+        _saving_edges.clear();
     }
     
     void RestoreState()
     {
+        _is_saving = false;
         log_it("Restore state");
-        *vg = *old_vg;
+        EdgesMap::iterator in_it;
+        vector<Vertex>::iterator out_it;
+        for (in_it = _saving_edges.begin(); in_it != _saving_edges.end(); ++in_it)
+        {
+            for (out_it = in_it->second.begin(); out_it != in_it->second.end(); ++out_it)
+            {
+                add_edge(in_it->first, *out_it, *vg);
+            }
+        }
+        _saving_edges.clear();
+//        *vg = *old_vg;
         log_it("Done");
     }
     
@@ -99,6 +123,12 @@ public:
         }
         deleted_vertexes.insert(vertex_idx);
         Vertex v = vertex( vertex_idx, *vg);
+        if (_is_saving)
+        {
+            AdjIter adj_begin, adj_end;
+            tie(adj_begin, adj_end) = adjacent_vertices(v, *vg);
+            _saving_edges[v] = vector<Vertex>(adj_begin, adj_end);
+        }
         clear_vertex(v, *vg);
     }
     
@@ -258,7 +288,7 @@ public:
     
 private:
     UndirGraph * vg;
-    UndirGraph * old_vg;
+//    UndirGraph * old_vg;
     vector<int> vertex_vector;
     
     vector<int> * border_vertex;
@@ -266,6 +296,9 @@ private:
     vector <int> prev_perc_sph;
     
     set<int> deleted_vertexes;
+    
+    bool _is_saving;
+    EdgesMap _saving_edges;
 };
 
 #endif
