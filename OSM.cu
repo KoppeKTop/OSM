@@ -113,6 +113,12 @@ double randf()
     return (double)rand()/RAND_MAX;
 }
 
+
+double Volume(double radius)
+{
+    return (4.0/3.0) * 3.14159 * (radius*radius*radius);
+}
+
 float GetSphereRadius(float ret_r = -1)
 {
     static float r = 0;
@@ -229,8 +235,10 @@ Iterator my_max_element(Iterator begin, Iterator end, BinaryPredicate gt_op)
     return result;
 }
 
-set<sph, dist_gt> * CollectNeighbours( h_sph_list::const_iterator start, h_sph_list::const_iterator stop, const sph curr)
+template <class Iter>
+set<sph, dist_gt> * CollectNeighbours( Iter start, Iter stop, const sph curr)
 // returns sorted set of neibours
+// Works on CPU
 {
     set<sph, dist_gt> * res = new set<sph, dist_gt>( dist_gt(curr) );
     const int cnt = stop - start;
@@ -247,7 +255,7 @@ set<sph, dist_gt> * CollectNeighbours( h_sph_list::const_iterator start, h_sph_l
     return res;
 }
 
-set<sph, dist_gt> * CollectNeighbours( sph * d_sph, h_sph_list & spheres, int cnt, const sph curr_sph)
+set<sph, dist_gt> * CollectNeighbours( d_sph_list * d_sph, const vector<sph> & spheres, int cnt, const sph curr_sph)
 // GPU version
 {
 //    printf("Start to CollectNeighbours\n");
@@ -281,7 +289,8 @@ set<sph, dist_gt> * CollectNeighbours( sph * d_sph, h_sph_list & spheres, int cn
 //    printf("Start GPU\n");
 //    sph * d_sph = thrust::raw_pointer_cast(&d_spheres[0]);
 //    printf("d_sph = %p\n", d_sph);
-    nei_list<<<dim3(grid,1), dim3(block, 1, 1)>>>(d_sph, curr_sph, d_results_idx, d_res_cnt, cnt);
+    sph * d_sph_raw = thrust::raw_pointer_cast(&d_sph[0][0]);
+    nei_list<<<dim3(grid,1), dim3(block, 1, 1)>>>(d_sph_raw, curr_sph, d_results_idx, d_res_cnt, cnt);
     cutilSafeCall(cudaThreadSynchronize());
     cutilSafeCall(cudaGetLastError());
 //    printf("GPU done\n");
@@ -340,22 +349,41 @@ set<sph, dist_gt> * CollectNeighbours( sph * d_sph, h_sph_list & spheres, int cn
     return res;
 }
 
-
-int GenMaxPacked(const int max_cnt, const float3 dim_len, sph * spheres)
+d_sph_list * append_sph(d_sph_list * spheres, sph new_sph, const int curr_cnt, const double curr_vol, const double max_vol)
+// if there is enough space in spheres, then just set spheres[curr_cnt]
+// else – calculate estimate needed memory and allocate new spheres container in GPU
+// return pointer to spheres
 {
-    h_sph_list h_spheres(max_cnt);
+    if (spheres->size() > curr_cnt)
+    {
+        (*spheres)[curr_cnt] = new_sph;
+        return spheres;
+    }
+    int new_size = 1.1 * max_vol * curr_cnt / curr_vol; // approx + 10%
+    d_sph_list * new_sph_list = new d_sph_list(new_size);
+    thrust::copy(spheres->begin(), spheres->end(), new_sph_list->begin());
+    delete spheres;
+    return new_sph_list;
+}    
+
+int GenMaxPacked(const double max_vol, const float3 dim_len, d_sph_list * spheres)
+{
+    vector<sph> h_spheres;
     int curr_cnt = 0;
     unsigned int max_holost = (unsigned int)(dim_len.x*dim_len.y);
     unsigned int holost = 0;
+    double curr_vol = 0;
+    double print_percent = 0.1;
     
     const int max_moves = 100;
-    while (curr_cnt < max_cnt && holost++ < max_holost)
+    while (curr_vol < max_vol && holost++ < max_holost)
     {
         sph new_pnt = GenRndPoint(dim_len);
         //printf("New point (%i of %i): (%f, %f, %f)\n", curr_cnt, max_cnt, new_pnt.x, new_pnt.y, new_pnt.z);
         if (curr_cnt == 0) {
-            h_spheres[curr_cnt] = new_pnt;
-            cutilSafeCall(cudaMemcpy(spheres+curr_cnt, &new_pnt, sizeof(sph), cudaMemcpyHostToDevice));
+            curr_vol += Volume(new_pnt.w);
+            h_spheres.push_back(new_pnt);
+            spheres = append_sph(spheres, new_pnt, curr_cnt, curr_vol, max_vol);
             curr_cnt ++;
             holost = 0;
             continue;
@@ -395,24 +423,20 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, sph * spheres)
             }
         }
         if (add) {
-
-            // test
-//            for (int i = 0; i < curr_cnt; ++i)
-//                if (is_overlapped(spheres[i], new_pnt, max_overlapping) )
-//                {
-//                    printf("Error!\n");
-//                }
-            h_spheres[curr_cnt] = new_pnt;
-            cutilSafeCall(cudaMemcpy(spheres+curr_cnt, &new_pnt, sizeof(sph), cudaMemcpyHostToDevice));
+            curr_vol += Volume(new_pnt.w);
+            h_spheres.push_back(new_pnt);
+            spheres = append_sph(spheres, new_pnt, curr_cnt, curr_vol, max_vol);
             curr_cnt ++;
             holost = 0;
-            if (curr_cnt % (max_cnt / 10) == 0)
+            if (curr_vol/max_vol > print_percent)
             {
+                print_percent += 0.1;
                 time_t time_since_epoch;
                 time( &time_since_epoch );
                 tm *current_time = localtime( &time_since_epoch );
                 
-                cout << "Point #" << curr_cnt << " of " << max_cnt << ": " << asctime( current_time );
+                cout << "Point #" << curr_cnt;
+                cout << " curr volume: " << curr_vol << " of " << max_vol << ": " << asctime( current_time );
             }
         }
         delete neigh;
@@ -577,10 +601,6 @@ private:
 //    return res;
 //}
 
-double Volume(double radius)
-{
-    return (4.0/3.0) * 3.14159 * (radius*radius*radius);
-}
 
 double CalcVolume(const vector<sph> & spheres, const vector<int> & indicies)
 {
@@ -759,16 +779,14 @@ runTest( int argc, char** argv)
         const double e_max = plan.Emaxpack;
         const float r = plan.R;
         GetSphereRadius(r);
-	const double vol_sph = Volume(r);
-        const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
+        const double max_vol = vol * (1.0-e_max);
+        const int init_cnt = 100000;
         
-        sph * d_spheres_raw = NULL;
-        cutilSafeCall(cudaMalloc((void **) &d_spheres_raw, max_cnt*sizeof(sph)));
-        cutilSafeCall(cudaMemset(d_spheres_raw, 0, max_cnt*sizeof(sph)));
-        int cnt = GenMaxPacked(max_cnt, sz, d_spheres_raw);
-        thrust::device_ptr<sph> d_spheres(d_spheres_raw);
-        h_sph_list spheres(d_spheres, d_spheres + cnt);
-        cudaFree(d_spheres_raw);
+        d_sph_list * d_spheres = new d_sph_list(init_cnt);
+        int cnt = GenMaxPacked(max_vol, sz, d_spheres);
+        h_sph_list spheres(d_spheres->begin(), d_spheres->begin() + cnt);
+        delete d_spheres;
+        
         v_spheres = new vector<sph>(spheres.begin(), spheres.end());
         SaveToFile(*v_spheres, plan.max_file_name);
     }
