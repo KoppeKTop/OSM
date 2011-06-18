@@ -27,6 +27,8 @@
 #include <thrust/reduce.h>
 #include <thrust/extrema.h>
 #include <thrust/device_ptr.h>
+#include "plan.h"
+
 
 // includes, kernels
 #include <OSM_kernel.cu>
@@ -742,80 +744,45 @@ vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const 
 void
 runTest( int argc, char** argv) 
 {
-    const float dim_sz = 500.0f;
-    const double e_max = 0.3f;
-    const float r = 3.0;
-    GetSphereRadius(r);
-    
+    Plan plan(argc, argv);
+    cutilSafeCall(cudaSetDevice(plan.pref_gpu));
+    cout << "GPU#" << plan.pref_gpu << endl;
+    cout << "Start\n";
+
+    vector<sph> * v_spheres = NULL;
+
+    const float dim_sz = plan.sz;
     const float3 sz = make_float3(dim_sz,dim_sz,dim_sz);
     const double vol = sz.x * sz.y * sz.z;
-    const double vol_sph = Volume(r);
-    const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
     
-    unsigned pref_gpu = 0;
-    if (argc > 1)
+    if (!plan.load_max)
     {
-        int res = sscanf(argv[1], "%u", &pref_gpu);
-        if (res == EOF)
-        {
-            printf("Using: %s [gpu_number]", argv[0]);
-            exit(10);
-        }
+        const double e_max = plan.Emaxpack;
+        const float r = plan.R;
+        GetSphereRadius(r);
+	const double vol_sph = Volume(r);
+        const int max_cnt =(int) (vol / vol_sph * (1.0-e_max));
+        
+        sph * d_spheres_raw = NULL;
+        cutilSafeCall(cudaMalloc((void **) &d_spheres_raw, max_cnt*sizeof(sph)));
+        cutilSafeCall(cudaMemset(d_spheres_raw, 0, max_cnt*sizeof(sph)));
+        int cnt = GenMaxPacked(max_cnt, sz, d_spheres_raw);
+        thrust::device_ptr<sph> d_spheres(d_spheres_raw);
+        h_sph_list spheres(d_spheres, d_spheres + cnt);
+        cudaFree(d_spheres_raw);
+        v_spheres = new vector<sph>(spheres.begin(), spheres.end());
+        SaveToFile(*v_spheres, plan.max_file_name);
     }
-    cutilSafeCall(cudaSetDevice((int)pref_gpu));
-    cout << "GPU#" << pref_gpu << endl;
+    else
+    {
+        cout << "Loading\n";
+        v_spheres = LoadFromFile(plan.max_file_name);
+    }
 
-    cout << "Start\n";
-    
-//    cout << "Loading\n";
-//    vector<sph> * v_spheres = LoadFromFile("max_500_r25_gpu.dat");
-//    d_sph_list d_spheres(max_cnt);
-
-
-    sph * d_spheres_raw = NULL;
-    cutilSafeCall(cudaMalloc((void **) &d_spheres_raw, max_cnt*sizeof(sph)));
-    cutilSafeCall(cudaMemset(d_spheres_raw, 0, max_cnt*sizeof(sph)));
-    int cnt = GenMaxPacked(max_cnt, sz, d_spheres_raw);
-    thrust::device_ptr<sph> d_spheres(d_spheres_raw);
-    h_sph_list spheres(d_spheres, d_spheres + cnt);
-    cudaFree(d_spheres_raw);
-//    cout << "Test passed. Saving\n";
-    vector<sph> * v_spheres = new vector<sph>(spheres.begin(), spheres.end());
-    SaveToFile(*v_spheres, "max_500_r30_gpu_2.dat");
-    
-    // test
-//    cout << "Start test\n";
-//    for (int idx1 = 0; idx1 < spheres.size(); ++idx1)
-//    {
-//        for (int idx2 = idx1+1; idx2 < spheres.size(); ++idx2)
-//        {
-//            if (is_overlapped(spheres[idx1], spheres[idx2], max_overlapping))
-//            {
-//                cout << "Test failed! 1:" << spheres[idx1] << " 2: " << spheres[idx2] << endl;
-//                exit(200);
-//            }
-//        }
-//    }
-    double need_e = 1.0-0.1/2.2;
+    double need_e = plan.Eres;
     double need_vol = vol*(1-need_e);
     vector<sph> * res = RemovePoints(*v_spheres, sz, need_vol);
 
-//    for (int idx1 = 0; idx1 < spheres.size(); ++idx1)
-//    {
-//        for (int idx2 = idx1+1; idx2 < spheres.size(); ++idx2)
-//        {
-//            if (is_overlapped(res[0][idx1], res[0][idx2], max_overlapping))
-//            {
-//                cout << "Test failed! 1: " << res[0][idx1] << " 2: " << res[0][idx2] << endl;
-//               // return;
-//            }
-//        }
-//    }
-    //h_sph_list h_spheres(spheres.begin(), spheres.begin() + cnt);
-    //
-    SaveToFile( *res, "res_500_r30_90_gpu_2.dat");
+    SaveToFile( *res, plan.res_file_name);
     delete res;
-    
-    //cout << "Done. Points: " << cnt << " of " << max_cnt
-    //<< ". E = " << (1 - vol_sph * cnt / vol) << endl;
 }
