@@ -345,10 +345,10 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, sph * spheres)
 {
     h_sph_list h_spheres(max_cnt);
     int curr_cnt = 0;
-    int max_holost = (int)(dim_len.x);
-    int holost = 0;
+    unsigned int max_holost = (unsigned int)(dim_len.x*dim_len.y);
+    unsigned int holost = 0;
     
-    const int max_moves = 20;
+    const int max_moves = 100;
     while (curr_cnt < max_cnt && holost++ < max_holost)
     {
         sph new_pnt = GenRndPoint(dim_len);
@@ -382,7 +382,6 @@ int GenMaxPacked(const int max_cnt, const float3 dim_len, sph * spheres)
                     delete neigh;
                     neigh = tmp;
                     holost++;
-                    moves = 0;
                 }
             } else {
                 if (!maybe_add) {
