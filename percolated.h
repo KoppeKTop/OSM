@@ -57,18 +57,24 @@ public:
         random_shuffle(vertex_vector.begin(), vertex_vector.end());
         
         border_vertex = new vector<int>[6];
-        for (int i = 0; i < sph_cnt; ++i)
+        for (int sph_idx = 0; sph_idx < sph_cnt; ++sph_idx)
         {
-            vector<int> * border_idx = get_border_idx(i);
-            if (border_idx)
+            vector<int> * border_idx = get_border_idx(sph_idx);
+            for (int curr_bord = 0; curr_bord < border_idx->size(); ++curr_bord)
             {
-                for (int i = 0; i < border_idx->size(); ++i)
-                {
-                    border_vertex[border_idx->at(i)].push_back(i);
-                }
-                delete border_idx;
+                border_vertex[border_idx->at(curr_bord)].push_back(sph_idx);
             }
+            delete border_idx;
         }
+        
+        // debug:
+//        cout << "Border vertexes:\n";
+//        for (int bord = 0; bord < 6; ++bord)
+//        {
+//            for (int idx = 0; idx < border_vertex[bord].size(); ++idx)
+//                cout << border_vertex[bord][idx] << " ";
+//            cout << endl;
+//        }
     }
     
     ~Percolation()
@@ -82,8 +88,9 @@ public:
     // permutation procedures:
     void SaveState()
     {
-        _is_saving = true;
         _saving_edges.clear();
+        _curr_iter_deleted.clear();
+        _is_saving = true;
 //        log_it("Save state");
 //        if (old_vg) delete old_vg;
 //        old_vg = new UndirGraph(*vg);
@@ -92,8 +99,9 @@ public:
     
     void StopSaving()
     {
-        _is_saving = false;
         _saving_edges.clear();
+        _curr_iter_deleted.clear();
+        _is_saving = false;
     }
     
     void RestoreState()
@@ -110,7 +118,18 @@ public:
             }
         }
         _saving_edges.clear();
-//        *vg = *old_vg;
+        if (_curr_iter_deleted.size() > 1)
+        {
+            while ( _curr_iter_deleted.size() != 0)
+            {
+                int pos = rand() % vertex_vector.size();
+                int el = _curr_iter_deleted.back();
+                vertex_vector.insert(vertex_vector.begin() + pos, el);
+                deleted_vertexes.erase(el);
+                _curr_iter_deleted.pop_back();
+            }
+        }
+        _curr_iter_deleted.clear();
         log_it("Done");
     }
     
@@ -122,6 +141,7 @@ public:
             exit(0);
         }
         deleted_vertexes.insert(vertex_idx);
+        _curr_iter_deleted.push_back(vertex_idx);
         Vertex v = vertex( vertex_idx, *vg);
         if (_is_saving)
         {
@@ -150,7 +170,8 @@ public:
             for (vector<int>::const_iterator it = border_vertex[border_idx].begin(); 
                  it != border_vertex[border_idx].end(); ++it)
             {
-                borders_clusters[border_idx].insert(clusters[*it]);
+                if (deleted_vertexes.find(*it) == deleted_vertexes.end())
+                    borders_clusters[border_idx].insert(clusters[*it]);
             }
         }
         // find intersection between borders
@@ -166,6 +187,21 @@ public:
             delete [] borders_clusters;
             return false;
         }
+        
+        
+        // debug
+//        cout << "Clusters:\n";
+//        for (int b_dim = 0; b_dim < 6; ++b_dim)
+//        {
+//            for (set<int>::iterator b_cl_idx = borders_clusters[b_dim].begin(); 
+//                 b_cl_idx != borders_clusters[b_dim].end(); ++b_cl_idx)
+//            {
+//                cout << *b_cl_idx << " ";
+//            }
+//            cout << endl;
+//        }
+        
+        
         vector<int> perc_clusters(borders_clusters[0].begin(), borders_clusters[0].end());
         vector<int>::iterator last_it = perc_clusters.end();
         vector<int> tmp(perc_clusters.size());
@@ -181,6 +217,7 @@ public:
             }
             last_it = copy(tmp.begin(), it, perc_clusters.begin());
         }
+        delete [] borders_clusters;
         perc_clusters.resize(last_it-perc_clusters.begin());
         log_it("Done");
         
@@ -202,39 +239,34 @@ public:
     }
     
     // wrapper to it
-    bool IsPercolatedWithout(int vertex_idx, bool restore_if_yes = false)
+    bool IsPercolatedWithout(vector<int> * vertex_idx, bool restore_if_yes = false)
     {
         SaveState();
-        DeleteVertex( vertex_idx);
+        for (vector<int>::iterator curr_del_vert = vertex_idx->begin(); curr_del_vert != vertex_idx->end(); 
+            ++curr_del_vert)
+        {
+            DeleteVertex( *curr_del_vert);
+        }
         bool res = IsPercolated();
         if (res && restore_if_yes || !res)  {
             RestoreState();
         }
         return res;
     }
-    
-    int GetRandomVertex()
+
+    vector<int> * GetRandomVertex(int vertex_cnt = 1)
     {
-        if (vertex_vector.size() == 0)
+        vector<int> * res = NULL;
+        if (vertex_vector.size() >= vertex_cnt)
         {
-            return -1;
-        }   else    {
-            int old_sz  = vertex_vector.size();
-            printf("vertex_vector.size() = %d, now = ", vertex_vector.size());
-            int res = vertex_vector[0];
-            vertex_vector.erase(vertex_vector.begin() );
-            printf("%d \n", vertex_vector.size());
-            printf("Popped: %d, last now = %d\n", res, vertex_vector[0]);
-            if (old_sz - vertex_vector.size() != 1)
-            {
-                printf("removed strange\n");
-                exit(0);
-            }
-            return res;
+            vector<int>::iterator beg_cp = vertex_vector.begin() + (vertex_vector.size() - vertex_cnt);
+            res = new vector<int>(beg_cp, vertex_vector.end());
+            vertex_vector.resize(vertex_vector.size()-vertex_cnt);
         }
+        return res;
     }
     
-    int TestRandomVertex()
+    int TestRandomVertex(int vertex_cnt = 1)
     // the most complex function
     // delete next random vertex
     // test percolation
@@ -242,20 +274,22 @@ public:
     // if graph percolates returns it's index of deleted vertex
     // else restores vertex and returns -1
     {
-        int vertex_idx = GetRandomVertex();
-        if (vertex_idx == -1)
+        vector<int> * vertex_idx = GetRandomVertex(vertex_cnt);
+        int res = 0;
+        if (vertex_idx == NULL)
         {
-            vertex_idx = -2;
+            res = -2;
         }   else if (! IsPercolatedWithout(vertex_idx) )   {
-            vertex_idx = -1;
+            res = -1;
         }
-        return vertex_idx;
+        return res;
     }
     
     void OnlyPerc(int perc_cluster_idx)
     {
         int vert_cnt = num_vertices(*vg);
         int j = 0;
+        vector<int>::iterator new_last = vertex_vector.end();
         for (int i = 0; i < vert_cnt; ++i)
         {
             if (perc_sph->at(perc_cluster_idx)[j] != i)
@@ -263,7 +297,10 @@ public:
                 if (deleted_vertexes.find(i) != deleted_vertexes.end() )
                 // already deleted
                     continue;
-                remove(vertex_vector.begin(), vertex_vector.end(), i);
+                new_last = remove(vertex_vector.begin(), new_last, i);
+                // remove is not actually deletes elements – it just shifts elements
+                // and leaves garbadge at the end. So we remember new last element 
+                // and do real erease at the end
                 DeleteVertex(i);
             }
             else 
@@ -271,7 +308,7 @@ public:
                 j++;
             }
         }
-        prev_perc_sph = perc_sph->at(perc_cluster_idx);
+        vertex_vector.erase(new_last, vertex_vector.end());
         delete perc_sph;
         perc_sph = NULL;
     }
@@ -285,7 +322,7 @@ public:
     {
         return perc_sph->at(idx);
     }
-    
+
 private:
     UndirGraph * vg;
 //    UndirGraph * old_vg;
@@ -293,9 +330,9 @@ private:
     
     vector<int> * border_vertex;
     vector<vector <int> > * perc_sph;
-    vector <int> prev_perc_sph;
     
     set<int> deleted_vertexes;
+    vector<int> _curr_iter_deleted;
     
     bool _is_saving;
     EdgesMap _saving_edges;

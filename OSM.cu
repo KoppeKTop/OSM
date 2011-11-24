@@ -119,6 +119,18 @@ double Volume(double radius)
     return (4.0/3.0) * 3.14159 * (radius*radius*radius);
 }
 
+double CalcVolume(const vector<sph> & spheres)
+{
+    double res = 0;
+    vector<sph>::const_iterator it = spheres.begin();
+    while(it != spheres.end()) 
+    {
+        res += Volume((*it).w);
+        ++it;
+    }
+    return res;
+}
+
 float GetSphereRadius(float ret_r = -1)
 {
     static float r = 0;
@@ -255,14 +267,14 @@ set<sph, dist_gt> * CollectNeighbours( Iter start, Iter stop, const sph curr)
     return res;
 }
 
-set<sph, dist_gt> * CollectNeighbours( d_sph_list * d_sph, const vector<sph> & spheres, int cnt, const sph curr_sph)
+set<sph, dist_gt> * CollectNeighbours( d_sph_list * d_sph, const vector<sph> * spheres, int cnt, const sph curr_sph)
 // GPU version
 {
 //    printf("Start to CollectNeighbours\n");
     const int THREADS_PER_BLOCK = 256;
     if (cnt < THREADS_PER_BLOCK)
     {
-        return CollectNeighbours(spheres.begin(), spheres.begin()+cnt, curr_sph);
+        return CollectNeighbours(spheres->begin(), spheres->begin()+cnt, curr_sph);
     }
     int * d_results_idx = NULL;
     int * d_res_cnt = NULL;
@@ -322,7 +334,7 @@ set<sph, dist_gt> * CollectNeighbours( d_sph_list * d_sph, const vector<sph> & s
         for (int idx = 0; idx < results_cnt; idx++)
         {
 //            printf("sphere #%d\n", results_idx[idx]);
-            res->insert(spheres[ results_idx[idx] ]);
+            res->insert((*spheres)[ results_idx[idx] ]);
         }
         
         delete [] results_idx;
@@ -360,20 +372,51 @@ d_sph_list * append_sph(d_sph_list * spheres, sph new_sph, const int curr_cnt, c
         return spheres;
     }
     int new_size = 1.1 * max_vol * curr_cnt / curr_vol; // approx + 10%
+    printf("Expand GPU array. Was %d, now %d\n", spheres->size(), new_size);
     d_sph_list * new_sph_list = new d_sph_list(new_size);
     thrust::copy(spheres->begin(), spheres->end(), new_sph_list->begin());
     delete spheres;
     return new_sph_list;
-}    
+}
 
-int GenMaxPacked(const double max_vol, const float3 dim_len, d_sph_list * spheres)
+void SaveToFile(const vector<sph> & spheres, const char * filename)
 {
-    vector<sph> h_spheres;
-    int curr_cnt = 0;
-    unsigned int max_holost = (unsigned int)(dim_len.x*dim_len.y);
-    unsigned int holost = 0;
+    FILE * outFile = fopen(filename, "wb");
+    
+    for (int i = 0; i < spheres.size(); ++i)
+    {
+        fwrite(&(spheres[i]), sizeof(spheres[i].x), 4, outFile);
+    }
+    
+    fclose(outFile);
+    printf("%d spheres saved to file %s\n", spheres.size(), filename);
+}
+
+vector<sph> * GenMaxPacked(const double max_vol, const float3 dim_len, vector<sph> * init = NULL)
+{
+    vector<sph> * h_spheres = NULL;
+    d_sph_list * spheres = NULL;
+    const int init_cnt = 10000;
     double curr_vol = 0;
+    int curr_cnt = 0;
     double print_percent = 0.1;
+    if (init)   {
+        h_spheres = new vector<sph>(init->begin(), init->end());
+        spheres = new d_sph_list(h_spheres->begin(), h_spheres->end());
+        curr_vol = CalcVolume(*h_spheres);
+        curr_cnt = h_spheres->size();
+        print_percent = floor(curr_vol/max_vol * 10 + 1) / 10.0;
+    }   else    {
+        h_spheres = new vector<sph>;
+        spheres = new d_sph_list(init_cnt);
+    }
+    
+    unsigned int max_holost = (unsigned int)(10*dim_len.x*dim_len.y);
+    unsigned int holost = 0;
+    
+    int rnd_desc = rand();
+    char * bu_fn = new char[256];
+    sprintf(bu_fn, "bu_max_%d.dat", rnd_desc);
     
     const int max_moves = 100;
     while (curr_vol < max_vol && holost++ < max_holost)
@@ -382,7 +425,7 @@ int GenMaxPacked(const double max_vol, const float3 dim_len, d_sph_list * sphere
         //printf("New point (%i of %i): (%f, %f, %f)\n", curr_cnt, max_cnt, new_pnt.x, new_pnt.y, new_pnt.z);
         if (curr_cnt == 0) {
             curr_vol += Volume(new_pnt.w);
-            h_spheres.push_back(new_pnt);
+            h_spheres->push_back(new_pnt);
             spheres = append_sph(spheres, new_pnt, curr_cnt, curr_vol, max_vol);
             curr_cnt ++;
             holost = 0;
@@ -424,7 +467,7 @@ int GenMaxPacked(const double max_vol, const float3 dim_len, d_sph_list * sphere
         }
         if (add) {
             curr_vol += Volume(new_pnt.w);
-            h_spheres.push_back(new_pnt);
+            h_spheres->push_back(new_pnt);
             spheres = append_sph(spheres, new_pnt, curr_cnt, curr_vol, max_vol);
             curr_cnt ++;
             holost = 0;
@@ -438,11 +481,15 @@ int GenMaxPacked(const double max_vol, const float3 dim_len, d_sph_list * sphere
                 cout << "Point #" << curr_cnt;
                 cout << " curr volume: " << curr_vol << " of " << max_vol << ": " << asctime( current_time );
             }
+            if (h_spheres->size() % 10000 == 0) {
+                SaveToFile(*h_spheres, bu_fn);
+            }
         }
         delete neigh;
     }
     printf("Generated %d points\n", curr_cnt);
-    return curr_cnt;
+    delete spheres;
+    return h_spheres;
 }
 
 template <typename T>
@@ -463,27 +510,35 @@ class OutputItem
        std::ofstream * stream_;
 };
 
-void SaveToFile(const vector<sph> & spheres, const char * filename)
+size_t GetSize( const char * path )
 {
-    FILE * outFile = fopen(filename, "wb");
-    
-    for (int i = 0; i < spheres.size(); ++i)
-    {
-        fwrite(&(spheres[i]), sizeof(spheres[i].x), 4, outFile);
-    }
-    
-    fclose(outFile);
-    printf("%d spheres saved to file %s\n", spheres.size(), filename);
+    FILE *pFile = fopen(path, "rb");
+    fseek( pFile, 0, SEEK_END );
+    size_t res = ftell( pFile );
+    fclose( pFile );
+    return res;
 }
+
 
 vector<sph> * LoadFromFile( const char * filename)
 {
+    size_t sz = GetSize(filename);
+    if (sz % sizeof(sph) != 0)
+    {
+        fprintf(stderr, "Wrong file size of %s\n", filename);
+        exit(300);
+    }
+    size_t cnt = sz / sizeof(sph);
+    sph * tmp = new sph[cnt];
+    
     FILE * inFile = fopen(filename, "rb");
-    sph curr_pnt;
-    vector<sph> * tmp = new vector<sph>();
-    while(fread(&curr_pnt, sizeof(curr_pnt.x), 4, inFile))
-        tmp->push_back( curr_pnt );
-    return tmp;
+    fread(tmp, sizeof(sph), cnt, inFile);
+    fclose(inFile);
+    
+    vector<sph> * res = new vector<sph>(tmp, tmp + cnt);
+    delete [] tmp;
+    printf("%d points loaded\n", cnt);
+    return res;
 }
 
 template <typename OutputType>
@@ -716,15 +771,36 @@ vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const 
     
     printf("Start deleting operations\n");
     
+    int iter = 0;
+    int rnd_desc = rand();
+    char * bu_fn = new char[256];
+    sprintf(bu_fn, "bu_%d.dat", rnd_desc);
+
+    int del_cnt = 0.001 * max_cluster_size;
+    int holost_cnt = 0;
+    double old_cluster_size = max_cluster_size;
+
     while(1)
     {
-        int del_idx = perc.TestRandomVertex();
-        if (del_idx == -1)
+        int del_res = perc.TestRandomVertex(del_cnt);
+        
+        if (del_res == -1)
         {
             log_it("Nope..");
+            if (++holost_cnt > del_res * 2 && del_cnt > 1)
+            {
+                del_cnt /= 2;
+                holost_cnt = 0;
+            }
             continue;
-        } else if (del_idx == -2) {
+        } else if (del_res == -2) {
             log_it("Spheres goes to end.");
+            if (del_cnt > 1)
+            {
+                del_cnt /= 2;
+                holost_cnt = 0;
+                continue;
+            }
             return NULL; // TODO: return final cluster
         }
         
@@ -741,11 +817,13 @@ vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const 
             }
         }
         printf("Biggest cluster have volume: %f\n", max_cluster_size);
+
         // +- 1% of min_volume is acceptable
         if (max_cluster_size < 0.99*min_volume)
         {
             perc.RestoreState();
             printf("Cluster too small\n");
+            holost_cnt++;
             continue;
         }
         if (max_cluster_size < 1.01*min_volume)
@@ -753,9 +831,23 @@ vector<sph> * RemovePoints( const vector<sph> & spheres, const float3 sz, const 
             vector<sph> *res = ConvertIndToSph(spheres, perc.GetPercClusterItems(max_cluster_idx));
             return res;
         }
+        
+        if (++iter % 10000 == 0 || (old_cluster_size - max_cluster_size)/old_cluster_size > 0.01)
+        {
+            iter = 0;
+            old_cluster_size = max_cluster_size;
+            vector<sph> filtered(perc.GetPercClusterItems(max_cluster_idx).size());
+            for (int i = 0; i < perc.GetPercClusterItems(max_cluster_idx).size(); ++i)
+            {
+                filtered[i] = spheres[perc.GetPercClusterItems(max_cluster_idx)[i]];
+            }
+            SaveToFile(filtered, bu_fn);
+        }
+        
         perc.StopSaving();
         perc.OnlyPerc(max_cluster_idx);
         printf("Current volume = %f, must be %f\n", max_cluster_size, min_volume);
+        holost_cnt = 0;
     }
     // never come here
 }
@@ -764,42 +856,46 @@ void
 runTest( int argc, char** argv) 
 {
     Plan plan(argc, argv);
-    cutilSafeCall(cudaSetDevice(plan.pref_gpu));
     cout << "GPU#" << plan.pref_gpu << endl;
+    cutilSafeCall(cudaSetDevice(plan.pref_gpu));
     cout << "Start\n";
 
     vector<sph> * v_spheres = NULL;
+    vector<sph> * v_old_spheres = NULL;
 
     const float dim_sz = plan.sz;
     const float3 sz = make_float3(dim_sz,dim_sz,dim_sz);
     const double vol = sz.x * sz.y * sz.z;
     
-    if (!plan.load_max)
-    {
-        const double e_max = plan.Emaxpack;
-        const float r = plan.R;
-        GetSphereRadius(r);
-        const double max_vol = vol * (1.0-e_max);
-        const int init_cnt = 100000;
-        
-        d_sph_list * d_spheres = new d_sph_list(init_cnt);
-        int cnt = GenMaxPacked(max_vol, sz, d_spheres);
-        h_sph_list spheres(d_spheres->begin(), d_spheres->begin() + cnt);
-        delete d_spheres;
-        
-        v_spheres = new vector<sph>(spheres.begin(), spheres.end());
-        SaveToFile(*v_spheres, plan.max_file_name);
-    }
-    else
-    {
-        cout << "Loading\n";
-        v_spheres = LoadFromFile(plan.max_file_name);
-    }
-
     double need_e = plan.Eres;
     double need_vol = vol*(1-need_e);
-    vector<sph> * res = RemovePoints(*v_spheres, sz, need_vol);
+    
+    vector<sph> * res = NULL;
+    
+    const double e_max = plan.Emaxpack;
+    const float r = plan.R;
+    GetSphereRadius(r);
+    const double max_vol = vol * (1.0-e_max);
+    int iter = 0;
+    while (!res && iter++ < 10)
+    {
+        if (plan.load_max && iter == 1)
+        {
+            v_spheres = LoadFromFile(plan.max_file_name);
+        }
+        else
+        {
+            v_old_spheres = v_spheres;
+            v_spheres = GenMaxPacked(max_vol, sz, v_old_spheres);
+            delete v_old_spheres;
+            SaveToFile(*v_spheres, plan.max_file_name);
+        }       
+        res = RemovePoints(*v_spheres, sz, need_vol);
+    }
 
-    SaveToFile( *res, plan.res_file_name);
-    delete res;
+    if (res)
+    {
+        SaveToFile( *res, plan.res_file_name);
+        delete res;
+    }
 }
