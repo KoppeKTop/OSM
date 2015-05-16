@@ -17,7 +17,7 @@
 #include <utility>
 #include <algorithm>
 
-#include <percolated.h>
+#include "percolated.h"
 
 // includes, project
 //#include <cutil_inline.h>
@@ -28,10 +28,10 @@
 #include <thrust/extrema.h>
 #include <thrust/device_ptr.h>
 #include "plan.h"
-
+#include "vector_types.h"
 
 // includes, kernels
-#include <OSM_kernel.cu>
+#include "OSM_kernel.cu"
 
 typedef float4 sph;
 typedef thrust::device_vector<float4> d_sph_list;
@@ -53,7 +53,7 @@ typedef graph_traits< UndirGraph >::edge_descriptor EdgeDescriptor;
 
 
 // For logging
-#include <log.h>
+#include "log.h"
 
 
 #define cutilSafeCall(err)           __cudaSafeCall      (err, __FILE__, __LINE__)
@@ -372,7 +372,7 @@ d_sph_list * append_sph(d_sph_list * spheres, sph new_sph, const int curr_cnt, c
         return spheres;
     }
     int new_size = 1.1 * max_vol * curr_cnt / curr_vol; // approx + 10%
-    printf("Expand GPU array. Was %d, now %d\n", spheres->size(), new_size);
+    printf("Expand GPU array. Was %ld, now %d\n", spheres->size(), new_size);
     d_sph_list * new_sph_list = new d_sph_list(new_size);
     thrust::copy(spheres->begin(), spheres->end(), new_sph_list->begin());
     delete spheres;
@@ -389,7 +389,7 @@ void SaveToFile(const vector<sph> & spheres, const char * filename)
     }
     
     fclose(outFile);
-    printf("%d spheres saved to file %s\n", spheres.size(), filename);
+    printf("%ld spheres saved to file %s\n", spheres.size(), filename);
 }
 
 vector<sph> * GenMaxPacked(const double max_vol, const float3 dim_len, vector<sph> * init = NULL)
@@ -537,7 +537,7 @@ vector<sph> * LoadFromFile( const char * filename)
     
     vector<sph> * res = new vector<sph>(tmp, tmp + cnt);
     delete [] tmp;
-    printf("%d points loaded\n", cnt);
+    printf("%ld points loaded\n", cnt);
     return res;
 }
 

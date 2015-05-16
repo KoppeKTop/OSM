@@ -10,7 +10,7 @@
 #include <set>
 #include <algorithm>
 
-#include <log.h>
+#include "log.h"
 
 // For BGL connection algorithm
 #include <boost/config.hpp>
@@ -233,7 +233,7 @@ public:
             for (vector<int>::iterator cl_it = clusters.begin(); cl_it != clusters.end(); ++cl_it, ++sph_idx)
                 if (*cl_it == *it)
                     perc_sph->at(clust_idx).push_back(sph_idx);
-            printf("Cluster %d: %d\n", clust_idx, perc_sph->at(clust_idx).size());
+            printf("Cluster %d: %d\n", clust_idx, (int)perc_sph->at(clust_idx).size());
         }
         return true;
     }
